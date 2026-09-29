@@ -55,6 +55,17 @@
 // v1.4.20 · 工具条方向恒定：一律出现在光标下方，不再按划选方向翻上翻下
 //   （仅当光标贴近视口底部、下方确实放不下时才翻到上方）。
 //
+// v1.4.21 · 修复「有批注但输入框为空时，必须先随便打点字才能点发送按钮」：
+//   宿主 InputBar 的发送按钮在草稿为空时是 disabled 的
+//   （primaryDisabled = empty || disabled || machineBusy || uploadsPending，
+//    empty = draft.trim() === '' && attachments.length === 0），
+//   而浏览器不会给 disabled 的表单控件派发 pointer/mouse 事件——v1.4.20 及之前
+//   监听按钮 pointerdown 的写法因此从未生效（注释里的假设是错的）。
+//   现在：有批注待发送且草稿为空时主动摘掉按钮的 disabled（视觉与功能一致地变为
+//   可用），capture 阶段接管 click 走插件自己的纯批注提交；草稿非空、按钮变成
+//   停止/排队/插话、输入区 aria-disabled、或无待发送批注时立即把 disabled 还回去。
+//   宿主拒绝提交（附件还在上传等）时 toast 如实告知，不假装成功。
+//
 // 消息格式（zh）：我批注了以下 N 处内容…\n\n1. 原文\n   批注：…\n\n
 //           请用「Annotation 1：…」…\n\n提问：
 // （en 用 I annotated the following N passage(s)… + Note: … + Ask:；
@@ -235,6 +246,7 @@ window.__ModuleLoader__.load({
         toast: {
           attachFail: '批注拼稿失败，消息将不带批注发送：',
           skipCommand: '本条是斜杠命令，未拼入批注；批注已保留，将随下一条消息发送',
+          sendBlocked: '批注未能发出（附件可能还在上传），请稍后重试：',
         },
         block: {
           head: '我批注了以下 {n} 处内容（编号与原文对应），请针对它们回答我的问题：',
@@ -272,6 +284,7 @@ window.__ModuleLoader__.load({
         toast: {
           attachFail: 'Failed to attach annotations; the message will be sent without them: ',
           skipCommand: 'Slash command detected — annotations stay pending and will attach to your next message',
+          sendBlocked: 'Annotation was not sent (an attachment may still be uploading); try again: ',
         },
         block: {
           head: 'I annotated the following {n} passage(s) (the numbers match the quotes below); please respond to them when answering my question:',
@@ -1529,26 +1542,109 @@ window.__ModuleLoader__.load({
         return label === '发送消息' || label === 'Send message' ? button : null
       }
 
-      // 鼠标/触控发送不经过 textarea 的 Enter 路径。pointerdown 能覆盖宿主因
-      // 空草稿而禁用的发送按钮；已有文字时只拼稿，后续 click 仍由宿主提交。
-      function onSendPointerDown(e) {
-        if (ui.quotes.length === 0 || e.button !== 0) return
-        var button = sendButtonOf(e.target)
-        if (button === null) return
-        var wasDisabled = button.disabled
-        if (!attachAndSend({ ctrlKey: false, metaKey: false }) || !wasDisabled) return
-        e.preventDefault()
-        e.stopPropagation()
-        submitAttached()
+      // 宿主的发送按钮在草稿为空时是 disabled 的
+      // （dsh-client-ui-conversation/lib/client.js：
+      //    empty = draft.trim() === '' && attachments.length === 0
+      //    primaryDisabled = primaryStops ? stop === undefined : empty || disabled || machineBusy || uploadsPending）
+      // 而浏览器**不会给 disabled 的表单控件派发 pointer/mouse 事件**——所以
+      // 「监听按钮上的 pointerdown」这条路永远等不到事件。v1.4.20 及之前就是这么写的，
+      // 注释里「pointerdown 能覆盖禁用的发送按钮」的假设是错的，表现为
+      // 「有批注但草稿为空时，必须先随便打点字才能点发送」。
+      // v1.4.21 改为：有批注待发送且草稿为空时主动摘掉 disabled（视觉与功能一致地变为
+      // 可用），并在 capture 阶段接管 click，走插件自己的纯批注提交路径。
+      var sendBtnState = { el: null }
+
+      /** composer 的草稿文本是否为空（服务不可用时也能读）。 */
+      function draftIsEmpty() {
+        var el = composerInputEl()
+        if (el === null) return false
+        var text = el.isContentEditable ? el.textContent : el.value
+        return (text || '').trim() === ''
       }
 
-      // 键盘/辅助技术激活按钮时没有 pointerdown，以 detail=0 的 click 补齐。
-      function onSendKeyboardClick(e) {
-        if (e.detail !== 0 || ui.quotes.length === 0 || sendButtonOf(e.target) === null) return
-        attachAndSend({ ctrlKey: false, metaKey: false })
+      /** 只接管「空草稿的纯批注」这一种情况：
+       *  - 有批注待发送；
+       *  - 按钮仍是宿主的普通发送按钮（运行中的停止 / 排队 / 插话按钮一律不碰）；
+       *  - 草稿为空；
+       *  - 输入区没有被宿主置为不可编辑（会话只读 / 父会话离线时 aria-disabled="true"）。
+       *  其余禁用原因（附件还在上传 uploadsPending 等）无法从 DOM 区分，交给点击时
+       *  宿主的拒绝 + toast 兜底，见 onSendButtonActivate。 */
+      function canOwnSendButton(button) {
+        if (ui.quotes.length === 0) return false
+        var label = button.getAttribute('aria-label')
+        if (label !== '发送消息' && label !== 'Send message') return false
+        var input = composerInputEl()
+        if (input !== null && input.getAttribute('aria-disabled') === 'true') return false
+        return draftIsEmpty()
       }
-      document.addEventListener('pointerdown', onSendPointerDown, true)
-      document.addEventListener('click', onSendKeyboardClick, true)
+
+      /** 条件满足时让发送按钮可用；条件消失后把 disabled 还回去。 */
+      function syncSendButton() {
+        var button = document.querySelector(
+          '[data-composer-card] button[aria-label="发送消息"],'
+          + '[data-composer-card] button[aria-label="Send message"]')
+        if (button === null) {
+          sendBtnState.el = null
+          return
+        }
+        if (canOwnSendButton(button)) {
+          sendBtnState.el = button
+          if (button.disabled) {
+            button.disabled = false
+            button.setAttribute('data-dsh-ann-enabled', '1')
+          }
+          return
+        }
+        var prev = sendBtnState.el
+        sendBtnState.el = null
+        if (prev === null || !prev.isConnected) return
+        if (prev.getAttribute('data-dsh-ann-enabled') !== '1') return
+        prev.removeAttribute('data-dsh-ann-enabled')
+        // 只有草稿仍是空的才把 disabled 还回去：用户若在这期间输入了文字，宿主
+        // 自己已经把按钮恢复为可用，这里不能覆盖掉。
+        if (draftIsEmpty()) prev.disabled = true
+      }
+
+      /** 卸载时把按钮还回宿主，否则插件停用后按钮会留在「看起来可用、点了没反应」的状态。 */
+      function releaseSendButton() {
+        var prev = sendBtnState.el
+        sendBtnState.el = null
+        if (prev === null || !prev.isConnected) return
+        if (prev.getAttribute('data-dsh-ann-enabled') !== '1') return
+        prev.removeAttribute('data-dsh-ann-enabled')
+        if (draftIsEmpty()) prev.disabled = true
+      }
+
+      /** 按钮激活（鼠标 / 触控 / 辅助技术都会产生 click）：宿主自己会因为 empty 而
+       *  拒绝提交（onPrimary 里 `if (!empty && !disabled && !machineBusy && !uploadsPending)`），
+       *  所以这里在 capture 阶段接管，不把事件交给宿主的 onClick。 */
+      function onSendButtonActivate(e) {
+        if (ui.quotes.length === 0 || e.button !== 0) return
+        var button = sendButtonOf(e.target)
+        if (button === null || button.getAttribute('data-dsh-ann-enabled') !== '1') return
+        e.preventDefault()
+        e.stopPropagation()
+        if (!attachAndSend({ ctrlKey: false, metaKey: false })) return
+        var shell = shellFor(scopeOfSession(currentSessionId()))
+        if (shell === null) { submitAttached(); return }
+        try {
+          shell.submit('queue')
+        } catch (err) {
+          // 宿主拒绝（附件未上传完 / 会话不可写等）：如实告知，不假装成功。
+          console.warn('[annotation] 批注提交被宿主拒绝：', err)
+          showToast(t('toast.sendBlocked') + (err && err.message ? err.message : err))
+        }
+      }
+      document.addEventListener('click', onSendButtonActivate, true)
+
+      // 宿主重渲染可能把 disabled 写回来、或整个按钮换掉：属性观察 + 周期扫描双兜底。
+      var sendBtnObserver = null
+      if (typeof MutationObserver === 'function') {
+        sendBtnObserver = new MutationObserver(function () { syncSendButton() })
+        sendBtnObserver.observe(document.documentElement,
+          { subtree: true, childList: true, attributes: true, attributeFilter: ['disabled', 'aria-label'] })
+      }
+      syncSendButton()
 
       // ---------- 渲染 ----------
       function iconButton(cls, icon, title, onClick) {
@@ -2687,7 +2783,10 @@ window.__ModuleLoader__.load({
       var decoTimer = null
       function kickDecorate() {
         decorateAll()
-        if (decoTimer === null) decoTimer = setInterval(decorateAll, 1000)
+        if (decoTimer === null) decoTimer = setInterval(function () {
+          decorateAll()
+          syncSendButton()
+        }, 1000)
       }
 
       // ---------- locale 服务（zh/en）订阅与实时回流 ----------
@@ -2753,8 +2852,9 @@ window.__ModuleLoader__.load({
         document.removeEventListener('selectionchange', onSelection)
         document.removeEventListener('pointerdown', onDocPointerDown, true)
         document.removeEventListener('keydown', onKeyDown, true)
-        document.removeEventListener('pointerdown', onSendPointerDown, true)
-        document.removeEventListener('click', onSendKeyboardClick, true)
+        document.removeEventListener('click', onSendButtonActivate, true)
+        releaseSendButton()
+        if (sendBtnObserver !== null) { sendBtnObserver.disconnect(); sendBtnObserver = null }
         document.removeEventListener('compositionstart', markImeComposing, true)
         document.removeEventListener('compositionend', markImeEnded, true)
         if (imeClearTimer !== null) { clearTimeout(imeClearTimer); imeClearTimer = null }

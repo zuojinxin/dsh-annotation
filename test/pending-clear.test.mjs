@@ -26,7 +26,9 @@ test('watchInputDraft 订阅失败时每秒重试（初始化时序洞由重试�
 })
 
 test('会话切换作废旧会话未消费的发送暂存数据', () => {
-  const sw = source.match(/var unsub = sessions\.list\.subscribe\(function \(\) \{[\s\S]*?\n      \}\)/)
+  // 本地版本改用轮询 currentSessionId() 检测切换（sessions.list 订阅在服务
+  // inactive 时会漏事件），语义不变：切换时作废旧会话未消费的发送暂存。
+  const sw = source.match(/setInterval\(function \(\) \{\n        var cur = currentSessionId\(\)[\s\S]*?\n      \}\)/)
   assert.ok(sw, 'client.js should define the session-switch handler')
   assert.match(sw[0], /pendingDeco\.length = 0/,
     'stale send staging from the previous session must be dropped, not consumed by the new session history')

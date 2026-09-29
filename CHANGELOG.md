@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.4.21] - 2026-09-30
+
+### 修复
+- **有批注但输入框为空时，发送按钮可以直接点**：宿主 InputBar 的发送按钮在草稿为空时是
+  `disabled` 的（`primaryDisabled = empty || disabled || machineBusy || uploadsPending`，其中
+  `empty = draft.trim() === '' && attachments.length === 0`），而浏览器**不会给 `disabled`
+  的表单控件派发 pointer/mouse 事件**——所以此前「监听按钮上的 pointerdown」的实现永远等不到
+  事件（注释里「pointerdown 能覆盖禁用的发送按钮」的假设是错的）。表现是：批注写好之后必须先
+  随便往输入框打点字，才能点发送。现在改为：有批注待发送且草稿为空时主动摘掉按钮的
+  `disabled`（视觉与功能一致地变为可用），并在 capture 阶段接管 `click`，走插件自己的纯批注
+  提交路径（与 Cmd/Ctrl+Enter 同一条路径）。草稿非空、按钮变成停止/排队/插话、输入区
+  `aria-disabled`、或无待发送批注时立即把 `disabled` 还回去，且不会覆盖用户已输入文字后宿主
+  自己恢复的可用状态；卸载时释放按钮并断开观察器，不留「看起来可用、点了没反应」的按钮。
+  宿主拒绝提交（附件还在上传等）时用 toast 如实告知，不假装成功。
+
+### 测试
+- 新增 `test/send-button.test.mjs`，锁住接管策略（capture 阶段、标记属性、只按草稿状态还原）
+  与决策守卫（批注数 / 按钮 label / 草稿空判定 / `aria-disabled`）。
+- 同时把 4 个上游测试对齐本地实现——v1.4.12–v1.4.20 期间它们已经与实现脱节，`npm test`
+  长期是红的（本次修复前 8 条失败）：
+  `enter-policy` 移除断言旧 `onSendPointerDown` 实现的用例（它把那个 bug 锁死了）；
+  `layout-overlay` 的 `placeAbove` 改为 v1.4.17 起的三参数签名（实测宽度）；
+  `message-block` 的 harness 补上 `currentSessionId` / `scopeOfSession` / `shellFor` 桩；
+  `pending-clear` 的会话切换检测改为本地版本的轮询实现。现在 31/31 全绿。
+
 ## [1.4.20] - 2026-09-30
 
 本仓库为 `zuojinxin` 的本地维护 fork，上游 `omdsh-dev/dsh-annotation` 停在

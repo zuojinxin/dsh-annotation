@@ -24,6 +24,12 @@ function harness(lang, draft, sourcePath) {
     var sessions = { list: { getSnapshot: () => ({ current: 'session' }) }, scope: () => ({}) }
     var ctx = { conversation: { input: { for: () => shell } } }
     function showToast() {}
+    // 本地版本把「会话 id / 作用域 / 输入 shell」的解析抽成了三个 helper
+    // （服务 inactive 时各自回退，见 client.js 的 currentSessionId / scopeOfSession /
+    // shellFor），这里按同样的语义给 attachAndSend 提供桩。
+    function currentSessionId() { return 'session' }
+    function scopeOfSession() { return {} }
+    function shellFor() { return shell }
     ${['buildBlock', 'shouldAttachForEnter', 'isCommandDraft', 'attachAndSend', 'hideAnnotationBlock', 'parseItemsFromBubble'].map(fn).join('\n')}
     return { setLang, attachAndSend, hideAnnotationBlock, parseItemsFromBubble }
   `)(shell, document, { SHOW_TEXT: 4 }, sourcePath)

@@ -69,14 +69,9 @@ test('保存批注后聚焦新版输入区，并把光标放在草稿末尾', ()
   assert.deepEqual(calls, [])
 })
 
-test('发送按钮在 pointerdown 阶段先拼稿，空草稿按钮则由插件直接提交', () => {
-  const fn = source.match(/function onSendPointerDown\(e\) \{[\s\S]*?\n      \}/)
-  assert.ok(fn, 'client.js should define onSendPointerDown')
-  assert.match(fn[0], /sendButtonOf\(e\.target\)/)
-  assert.match(fn[0], /attachAndSend\(\{ ctrlKey: false, metaKey: false \}\)/)
-  assert.match(fn[0], /!wasDisabled\) return/)
-  assert.match(fn[0], /submitAttached\(\)/)
-})
+// 发送按钮的接管策略已移到 test/send-button.test.mjs（v1.4.21 起改为
+// 「摘 disabled + capture 阶段接管 click」；旧版监听按钮 pointerdown 的写法
+// 永远收不到事件，见那个文件的说明）。
 
 test('丢失 compositionend 的输入法锁会超时复位', () => {
   const fn = source.match(/function isImeKeyBlocked\(e\) \{[\s\S]*?\n      \}/)

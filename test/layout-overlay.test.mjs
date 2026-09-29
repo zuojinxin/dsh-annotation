@@ -17,11 +17,16 @@ test('滚动和布局变化会刷新输入框批注胶囊（issue #44）', () =>
   assert.match(source, /composerObserver\.disconnect\(\)/)
 })
 
-test('工具条优先选区下方，底部空间不足时放在上方（PR #48）', () => {
-  const match = source.match(/function placeAbove\(rect, height\) \{[\s\S]*?\n    \}/)
+test('工具条优先选区下方，底部空间不足时放在上方（PR #48；v1.4.17 起用实测宽度居中）', () => {
+  const match = source.match(/function placeAbove\(rect, height, width\) \{[\s\S]*?\n    \}/)
   assert.ok(match)
   const place = Function('window', `return (${match[0]})`)({ innerWidth: 1000, innerHeight: 800 })
-  assert.equal(place({ left: 200, width: 300, top: 300, bottom: 320 }, 40).top, 328)
-  assert.equal(place({ left: 200, width: 300, top: 750, bottom: 770 }, 40).top, 702)
-  assert.ok(place({ left: -100, width: 300, top: 0, bottom: 800 }, 40).top >= 8)
+  assert.equal(place({ left: 200, width: 300, top: 300, bottom: 320 }, 40, 300).top, 328)
+  assert.equal(place({ left: 200, width: 300, top: 750, bottom: 770 }, 40, 300).top, 702)
+  assert.ok(place({ left: -100, width: 300, top: 0, bottom: 800 }, 40, 300).top >= 8)
+  // v1.4.17：宽度缺省 / 为 0 时退回 96 的保守宽度，窄选区（双击选一个词）不再被
+  // 硬编码的 400 推到视口最左边。
+  assert.equal(place({ left: 500, width: 20, top: 300, bottom: 320 }, 40, 0).left, 462)
+  // 居中后仍被视口夹取。
+  assert.equal(place({ left: 980, width: 20, top: 300, bottom: 320 }, 40, 300).left, 692)
 })
