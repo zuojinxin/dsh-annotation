@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.4.23] - 2026-09-30
+
+### 修复
+- **点发送的瞬间不再看到批注原文一闪而过**（用户 2026-09-30 报）：隐藏手术
+  （`decorateAll` → `hideAnnotationBlock`）原先只在**含 `childList` 的批次**里同步执行——这是
+  v1.4.3 为省流式开销做的优化，前提假设是「行插入批次本身就携带完整批注块」。但用户消息气泡
+  可能先插入空行、再由 React 的 `commitTextUpdate` 把文本写进**已有的**文本节点，那是
+  `characterData` 批次；这种批次原先只触发 500ms 限流的助手芯片扫描，于是批注块先被画了出来
+  （用户看到原文一闪而过），要等 1s 兜底轮询才被隐藏。
+
+  现在发送时打开一个「期待新气泡」窗口（`markFreshBubble()`，≤2s）：窗口内**任何**相关批次都
+  同步跑一次隐藏手术；最新一条装饰成功后立刻收起窗口（`settleFreshBubble()`），所以不会把
+  v1.4.3 省下的流式开销还回去。窗口在两个拼稿路径（服务 / DOM 回退）与草稿提交
+  （`clearSentQuotes`）三处打开，覆盖「订阅缺失但气泡照样出现」的情况。
+
+### 测试
+- 新增 `test/bubble-hide.test.mjs`：锁住窗口语义（标记 / 过期 / 收起）、observer 的
+  `hasRowInsert || awaitingFreshBubble()` 条件、`decorateAll` 只在最新一条装饰成功后收起、
+  以及三个打开点。
+- `test/message-block.test.mjs` 的 harness 补上 `markFreshBubble` 桩（`attachAndSend` 的新
+  自由变量；缺桩会被它的 try/catch 吞掉，表现为 `attachAndSend` 返回 false）。
+- 全套件 **39/39 全绿**。
+
 ## [1.4.22] - 2026-09-30
 
 ### 加固（v1.4.21 的审计结论）

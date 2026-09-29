@@ -30,6 +30,10 @@ function harness(lang, draft, sourcePath) {
     function currentSessionId() { return 'session' }
     function scopeOfSession() { return {} }
     function shellFor() { return shell }
+    // v1.4.23：attachAndSend 成功后要打开「期待新气泡」窗口（见 client.js 的
+    // markFreshBubble）。它是 attachAndSend 的自由变量，harness 必须给桩，否则会抛
+    // ReferenceError 被 try/catch 吞掉 → attachAndSend 变成返回 false。
+    function markFreshBubble() {}
     ${['buildBlock', 'shouldAttachForEnter', 'isCommandDraft', 'attachAndSend', 'hideAnnotationBlock', 'parseItemsFromBubble'].map(fn).join('\n')}
     return { setLang, attachAndSend, hideAnnotationBlock, parseItemsFromBubble }
   `)(shell, document, { SHOW_TEXT: 4 }, sourcePath)

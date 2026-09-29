@@ -77,6 +77,15 @@
 //   3. **还原 disabled 时要求按钮仍是「普通发送」按钮**：运行中它会变成停止按钮，误设
 //      disabled 会把「停止」点不了。
 //
+// v1.4.23 · 修复「点发送的瞬间能看到批注原文一闪而过」：
+//   隐藏手术原先只认「含 childList 的批次」同步执行（v1.4.3 为省流式开销做的优化），
+//   前提假设是「行插入批次本身就携带完整批注块」。但用户消息气泡可能先插入空行、再由
+//   React 的 commitTextUpdate 把文本写进**已有的**文本节点——那是 characterData 批次，
+//   原先只触发 500ms 限流的助手扫描，于是批注块先被画出来（用户看到原文一闪而过），
+//   要等 1s 兜底轮询才隐藏。现在发送时打开一个「期待新气泡」窗口（≤2s）：窗口内任何
+//   相关批次都同步跑隐藏手术，最新一条装饰成功即收起窗口，所以不会把 v1.4.3 省下的
+//   流式开销还回去。
+//
 // 消息格式（zh）：我批注了以下 N 处内容…\n\n1. 原文\n   批注：…\n\n
 //           请用「Annotation 1：…」…\n\n提问：
 // （en 用 I annotated the following N passage(s)… + Note: … + Ask:；
@@ -1460,12 +1469,27 @@ window.__ModuleLoader__.load({
         }
         return false
       }
+      // 「刚发出、正等着新气泡出现」的窗口：这期间任何相关 mutation 批次都要**同步**跑一次
+      // decorateAll，不能只认 childList 批次。原因：v1.4.3 的优化假设「行插入批次本身就
+      // 携带完整批注块」，但用户消息气泡可能先插入空行、再由 React 的 commitTextUpdate 把
+      // 文本写进**已有的**文本节点——那是 characterData 批次，原先只触发 500ms 限流的助手
+      // 扫描，于是批注块先被画出来（用户看到「原文一闪而过」），要等 1s 轮询才隐藏。
+      // 窗口很短：正常情况下第一个批次就隐藏成功并立刻收起，不会把 v1.4.3 省下的流式开销
+      // 还回去。
+      var freshBubbleUntil = 0
+      var FRESH_BUBBLE_WINDOW = 2000
+      function markFreshBubble() { freshBubbleUntil = Date.now() + FRESH_BUBBLE_WINDOW }
+      function awaitingFreshBubble() { return Date.now() < freshBubbleUntil }
+      function settleFreshBubble() { freshBubbleUntil = 0 }
+
       var observer = new MutationObserver(function (mutations) {
         if (!mutationRelevant(mutations)) return
         onLayoutChange()
-        // 只有「消息行插入」批次才同步执行气泡装饰（隐藏批注块 + 贴标签）：
+        // 「消息行插入」批次同步执行气泡装饰（隐藏批注块 + 贴标签）：
         // MutationObserver 回调在微任务阶段运行，早于浏览器绘制，
         // 用户看不到「先显示批注块再隐藏」的闪烁。
+        // 另外，刚发出消息的短窗口内（awaitingFreshBubble）任何相关批次也同步执行——
+        // 气泡文本可能由 characterData 批次写入，只认 childList 会漏掉它。
         // 流式输出期的主体 mutation 是 attributes/characterData（每个 token 帧一层
         // class/style/文本变更，实测 20s 内 245 批次 0 个 childList）：行插入本来
         // 就携带完整批注块，逐一触发全文档扫描（decorateAll 是 querySelectorAll +
@@ -1475,7 +1499,7 @@ window.__ModuleLoader__.load({
         for (var i = 0; i < mutations.length; i++) {
           if (mutations[i].type === 'childList') { hasRowInsert = true; break }
         }
-        if (hasRowInsert) {
+        if (hasRowInsert || awaitingFreshBubble()) {
           decorateAll()
           return
         }
@@ -2079,6 +2103,7 @@ window.__ModuleLoader__.load({
             var block = buildBlock(hasQuestion)
             shell.setDraft(block + (hasQuestion ? '\n' + draft : ''))
             annotationAttached = true
+            markFreshBubble()
             console.log('[annotation] 批注块已拼入草稿，回车将随消息发送（' + ui.quotes.length + ' 条）')
             return true
           } catch (err) {
@@ -2104,6 +2129,7 @@ window.__ModuleLoader__.load({
           if (!domAttachBlock(buildBlock(hasQ), hasQ)) return false
           annotationAttached = true
           domAttached = true
+          markFreshBubble()
           console.log('[annotation] 批注块已注入输入区（DOM 回退），回车将随消息发送（' + ui.quotes.length + ' 条）')
           return true
         } catch (err) {
@@ -2417,6 +2443,8 @@ window.__ModuleLoader__.load({
         updateChip()
         renderMarkers()
         pendingDeco.push({ items: sentItems })
+        // 草稿已提交：新气泡马上出现，打开「任何批次都同步隐藏」的窗口。
+        markFreshBubble()
         kickDecorate()
       }
 
@@ -2822,6 +2850,8 @@ window.__ModuleLoader__.load({
             if (!hideAnnotationBlock(el)) continue // 内容未渲染完 → 留给下轮（发送暂存数据不弹出）
             if (fromSend) pendingDeco.shift()
             attachBubbleTag(el, items)
+            // 最新一条已装饰完成：收起「期待新气泡」窗口，别让后续流式批次继续全量扫描。
+            if (i === rows.length - 1) settleFreshBubble()
             // 这里绝不清空待发送批注：DOM 层面无法区分「刚发送的消息」与「会话
             // 切换/刷新后重新渲染的历史消息」，历史消息重装饰曾被误判为已发送而
             // 清空刚恢复的待发送批注（issue #28 复测）。发送清空的唯一权威是
