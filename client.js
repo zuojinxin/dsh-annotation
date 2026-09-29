@@ -22,6 +22,39 @@
 //   7. 语言跟随 DSH locale 服务（v1.4）：UI 文案与协议块 zh/en 双语、实时切换，
 //      隐藏手术与反解析同时兼容「提问：」/「Ask:」与「问题：」老格式
 //
+// v1.4.12 · 工具条定位改为「划选结束时鼠标停留位置的正下方」（pointer 落点追踪；
+//   键盘 / 双击划选回退选区矩形定位），不再居中于整个选区、不再压住选区下方正文。
+//
+// v1.4.13 · 修复「同时出现两个批注按钮」（teardown 单槽引用被覆盖 → 旧浮层残留；
+//   改为实例注册表逐个撤销 + 选择器清场兜底）与「按钮四周一圈透明灰色光晕」
+//   （浮层不再用半透明菜单填充 + 40px 背景模糊 + 全透明描边；改插件自有的不透明
+//   表面变量 + 轻投影 + 实体细描边，不依赖会被皮肤覆盖的主题 token）。
+//
+// v1.4.14 · 残留清场的两个触发点补齐：decorateAll 周期清场（兜住启动后新塞入的
+//   残留层）+ teardown 清场（撤销自己后顺带清掉历史遗留层）。
+//
+// v1.4.15 · teardown 清场加「当前实例」守卫：旧实例被延迟 dispose 时不再误删
+//   新实例的浮层。
+//
+// v1.4.16 · 修复「有时候工具条不在鼠标下方」：拖动越出视口时不再丢弃指针锚点
+//   （钳到最近边缘），且真实拖动一经确认即置可信（不依赖 pointerup，窗口外松开
+//   也能贴鼠标），并补 pointercancel 收尾。
+//
+// v1.4.17 · 修复「反向划选时工具条不紧贴鼠标」：旧实现固定取
+//   Math.max(point.y, rect.bottom)，反向划选时光标在选区上沿，必然取到
+//   rect.bottom，工具条被推到整个选区之外。改为按「光标在选区哪一半」决定
+//   贴光标上方还是下方，正反向都紧贴光标且不压正文；placeAbove 同时改用实测
+//   宽度（原硬编码 400 会把窄选区推到视口最左边）。
+//
+// v1.4.18 · 定位优先级收敛为「紧贴光标 → 让开选区 → 翻侧 → 视口夹取」：
+//   修好光标落在选区内部空档行时「贴光标」与「不压正文」互相冲突的情况。
+//
+// v1.4.19 · 「让开选区」改为候选 + 容差（4px）评估：修好 v1.4.18 因 1px 边缘交叠
+//   就把工具条推到整个选区之外的问题，恢复「紧贴光标」。
+//
+// v1.4.20 · 工具条方向恒定：一律出现在光标下方，不再按划选方向翻上翻下
+//   （仅当光标贴近视口底部、下方确实放不下时才翻到上方）。
+//
 // 消息格式（zh）：我批注了以下 N 处内容…\n\n1. 原文\n   批注：…\n\n
 //           请用「Annotation 1：…」…\n\n提问：
 // （en 用 I annotated the following N passage(s)… + Note: … + Ask:；
@@ -54,13 +87,22 @@ window.__ModuleLoader__.load({
       var style = document.createElement('style')
       style.id = STYLE_ID
       style.textContent = [
+        // 浮层表面（修复「一圈透明灰色光晕」）：不透明 + 无背景模糊 + 实体描边。
+        // 用插件自有变量名，不依赖 --dsw-specific-menu 等会被皮肤覆盖的 token。
+        // 定义在 body 上，直接挂在 body 下的 chip / tip / toast 也能继承。
+        // （all: initial 不重置自定义属性，host 子树照常继承。）
+        'body { --dsh-ann-surface: #ffffff; --dsh-ann-border: rgba(0, 0, 0, .12); }',
+        'body[data-ds-dark-theme] { --dsh-ann-surface: #2c2c2e;',
+        '  --dsh-ann-border: rgba(255, 255, 255, .14); }',
         '[data-annotation-for-dsh] { all: initial; }',
         '[data-annotation-for-dsh] * { box-sizing: border-box; }',
         '.dsh-ann-bar { position: fixed; z-index: 1200; display: flex; align-items: center;',
         '  gap: 2px; padding: 4px; border-radius: 12px;',
-        '  border: 1px solid var(--dsw-alias-border-inverted);',
-        '  background: var(--dsw-specific-menu, #2c2c2e);',
-        '  box-shadow: var(--dsw-shadow-lv3);',
+        '  border: 1px solid var(--dsh-ann-border, rgba(0, 0, 0, .12));',
+        '  background: var(--dsh-ann-surface, #fff);',
+        '  backdrop-filter: none;',
+        '  -webkit-backdrop-filter: none;',
+        '  box-shadow: var(--dsw-shadow-lv2);',
         '  font-family: var(--dsw-font-family, system-ui);',
         '  animation: dsh-ann-pop .12s var(--ds-ease-in-out, ease); }',
         '@keyframes dsh-ann-pop { from { opacity: 0; transform: translateY(3px); }',
@@ -88,9 +130,11 @@ window.__ModuleLoader__.load({
         '.dsh-ann-icon svg { width: 14px; height: 14px; }',
         '.dsh-ann-card { position: fixed; z-index: 1201; width: 400px;',
         '  max-width: calc(100vw - 16px); padding: 12px; border-radius: 12px;',
-        '  border: 1px solid var(--dsw-alias-border-inverted);',
-        '  background: var(--dsw-specific-menu, #2c2c2e);',
-        '  box-shadow: var(--dsw-shadow-lv3);',
+        '  border: 1px solid var(--dsh-ann-border, rgba(0, 0, 0, .12));',
+        '  background: var(--dsh-ann-surface, #fff);',
+        '  backdrop-filter: none;',
+        '  -webkit-backdrop-filter: none;',
+        '  box-shadow: var(--dsw-shadow-lv2);',
         '  font-family: var(--dsw-font-family, system-ui);',
         '  animation: dsh-ann-pop .12s var(--ds-ease-in-out, ease); }',
         '.dsh-ann-card-head { display: flex; align-items: center; justify-content: space-between;',
@@ -791,8 +835,9 @@ window.__ModuleLoader__.load({
       return s.length > n ? s.slice(0, n) + '…' : s
     }
 
-    function placeAbove(rect, height) {
-      var w = 400
+    function placeAbove(rect, height, width) {
+      // 用实测宽度居中；硬编码 400 会把窄选区（双击选一个词）推到视口最左边。
+      var w = width > 0 ? width : 96
       var left = rect.left + rect.width / 2 - w / 2
       left = Math.max(8, Math.min(left, window.innerWidth - w - 8))
       // 下方优先：原生选中菜单（移动端长按菜单、桌面 Copy/Search 浮层）锚定在选区
@@ -808,6 +853,34 @@ window.__ModuleLoader__.load({
         if (top < 8) top = Math.min(rect.bottom + 8, window.innerHeight - height - 8)
       }
       return { left: Math.round(left), top: Math.round(Math.max(8, top)) }
+    }
+
+    /** 指针落点定位：工具条水平居中于「划选结束时鼠标停留位置」，
+     *  竖直方向**恒定**落在光标下方（不再按划选方向翻上翻下）。
+     *  width > 0 时用实测宽度；未知时用估算宽度（挂载后再校正一次）。
+     *
+     *  方向恒定是刻意的：旧实现按「光标在选区哪一半」决定贴上还是贴下，
+     *  于是正向划选在下方、反向划选在上方，位置随方向跳变，每次都要重新找按钮。
+     *  现在一律放下方，只有「光标贴近视口底部、下方确实放不下」时才翻到上方
+     *  —— 那是物理必需，不随划选方向变化，日常使用中方向恒定。
+     *
+     *  代价：反向划选时光标停在选区上沿，下方就是刚选中的文字，按钮会压在上面。
+     *  这是一致性的必然取舍（用户明确以「始终在下方」优先）。 */
+    function placeForSelection(rect, point, height, width) {
+      if (point === null) return placeAbove(rect, height, width)
+      var w = width > 0 ? width : 96
+      var left = point.x - w / 2
+      left = Math.max(8, Math.min(left, window.innerWidth - w - 8))
+      var GAP = 8
+      var maxTop = window.innerHeight - height - 8
+      var top = point.y + GAP                 // 恒定：光标下方
+      if (top > maxTop) {
+        // 下方确实放不下（光标贴近视口底部）才翻到上方；与划选方向无关。
+        top = point.y - height - GAP
+        if (top < 8) top = maxTop
+      }
+      top = Math.max(8, Math.min(top, maxTop))
+      return { left: Math.round(left), top: Math.round(top) }
     }
 
     function svg(paths, viewBox) {
@@ -902,7 +975,124 @@ window.__ModuleLoader__.load({
 
     // ============================== 插件主体 ==============================
     function apply(ctx) {
-      var sessions = ctx.sessions
+      // 重复 apply 防护（fiber 重载 / 热重载兜底）：先撤销上一实例，避免双份
+      // 文档级监听与双份浮层——双份会把批注块拼进草稿两次。
+      // 实例注册表：teardown 是单槽引用，会被后一实例覆盖，导致前一实例的浮层
+      // 永久残留（= 屏幕上两个「批注」按钮）。这里逐个撤销所有历史实例。
+      // 挂在 window 上，不同 bundle 副本（各自模块作用域）也能共享。
+      var INSTANCE_REGISTRY = '__dshAnnotationInstances'
+      try {
+        var registry = window[INSTANCE_REGISTRY]
+        if (!Array.isArray(registry)) { registry = []; window[INSTANCE_REGISTRY] = registry }
+        for (var ri = 0; ri < registry.length; ri++) {
+          try { registry[ri]() } catch (_) {}
+        }
+        registry.length = 0
+      } catch (_) {}
+      try {
+        if (typeof window.__dshAnnotationTeardown === 'function') window.__dshAnnotationTeardown()
+      } catch (_) {}
+
+      /** 按选择器清掉「不是本实例」的浮层：兜底注册表管不到的历史遗留实例
+       *  （例如由本补丁之前的旧 bundle 创建的 host / overlay）。 */
+      function sweepStrayLayers() {
+        try {
+          var hosts = document.querySelectorAll('[data-annotation-for-dsh]')
+          for (var i = 0; i < hosts.length; i++) {
+            if (hosts[i] !== host) hosts[i].remove()
+          }
+          var ovs = document.querySelectorAll('[data-annotation-overlay]')
+          for (var j = 0; j < ovs.length; j++) {
+            if (ovs[j] !== overlay) ovs[j].remove()
+          }
+        } catch (_) {}
+      }
+
+      // ---------- 服务惰性解析（修复 cannot get required service ... in inactive context）----------
+      // 插件 ctx 所属 fiber 在「会话作用域重新物化 / 服务重注册 / 插件热重载」窗口内
+      // 会进入 inactive；此时读注入服务，cordis 反射 handler 直接抛
+      //   cannot get required service "conversation" in inactive context
+      // （cordis/lib/index.js 反射 get：prop 命中 fiber.inject 但 fiber.store 无实现即抛）。
+      // 因此任何一次使用都重新解析、失败即回退，绝不缓存服务对象，绝不让批注静默丢失。
+      var sessionsFallback = null
+      try { sessionsFallback = ctx.sessions } catch (_) { sessionsFallback = null }
+
+      function sessionsSvc() {
+        try {
+          var s = ctx.sessions
+          if (s !== undefined && s !== null && typeof s.scope === 'function') return s
+        } catch (_) {}
+        return sessionsFallback
+      }
+
+      function conversationSvc() {
+        try {
+          var svc = ctx.conversation
+          if (svc !== undefined && svc !== null && svc.input !== undefined) return svc
+        } catch (_) {}
+        return null
+      }
+
+      /** 安全解析会话作用域；服务不可用或未保留该会话时返回 undefined。 */
+      function scopeOfSession(id) {
+        if (id === undefined || id === null) return undefined
+        var s = sessionsSvc()
+        if (s === null || typeof s.scope !== 'function') return undefined
+        try {
+          var sc = s.scope(id)
+          return sc === undefined ? undefined : sc
+        } catch (_) {
+          return undefined
+        }
+      }
+
+      /** 解析会话输入 shell；服务 inactive 或作用域未物化时返回 null（调用方回退 DOM）。 */
+      function shellFor(scoped) {
+        if (scoped === undefined || scoped === null) return null
+        var svc = conversationSvc()
+        if (svc === null) return null
+        try {
+          var sh = svc.input.for(scoped)
+          if (sh !== undefined && sh !== null && sh.state !== undefined) return sh
+        } catch (_) {}
+        return null
+      }
+
+      function composerInputEl() {
+        var el = document.querySelector('[data-composer-card] [data-composer-input]')
+        return el instanceof HTMLElement && el.isContentEditable ? el : null
+      }
+
+      function domDraftText() {
+        var el = composerInputEl()
+        return el === null ? '' : (el.innerText || el.textContent || '')
+      }
+
+      /** DOM 回退：把批注块 prepend 进可编辑输入区（光标置首后 insertText）。
+       *  走宿主编辑机自己的输入通道，随后宿主自己的 Enter / 发送按钮提交，批注不丢。 */
+      function domAttachBlock(block, hasQuestion) {
+        var el = composerInputEl()
+        if (el === null) return false
+        try {
+          el.focus({ preventScroll: true })
+          var sel = window.getSelection()
+          if (sel === null) return false
+          sel.selectAllChildren(el)
+          sel.collapseToStart()
+          var ok = document.execCommand('insertText', false, block + (hasQuestion ? '\n' : ''))
+          return ok !== false
+        } catch (_) {
+          return false
+        }
+      }
+
+      function currentSessionId() {
+        try {
+          var raw = localStorage.getItem("dsh.sessions.current")
+          if (raw) { var j = JSON.parse(raw); if (j && j.sessionId) return j.sessionId }
+        } catch (_) {}
+        return null
+      }
 
       var host = document.createElement('div')
       host.setAttribute('data-annotation-for-dsh', '')
@@ -911,6 +1101,8 @@ window.__ModuleLoader__.load({
       overlay.setAttribute('data-annotation-overlay', '')
       overlay.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:900;'
       document.body.appendChild(overlay)
+      // host / overlay 已绑定本实例：此刻任何其它同选择器元素都是残留。
+      sweepStrayLayers()
 
       var ui = {
         mode: 'closed',      // closed | actions | editing | composing
@@ -924,6 +1116,10 @@ window.__ModuleLoader__.load({
         lastKey: '',
         pendingAnchor: null,
         el: null,
+        anchorRel: null,     // 指针落点相对选区矩形的偏移（跟随滚动 / 重排）
+        anchorPoint: null,   // 本次落位使用的指针视口坐标（null = 键盘 / 双击划选）
+        anchorRect: null,    // 本次落位使用的选区矩形（宽度实测后重排用）
+        barWidth: 0,         // 上次实测的工具条宽度
       }
 
       function readPendingQuotes(sessionId) {
@@ -948,7 +1144,7 @@ window.__ModuleLoader__.load({
       }
 
       function writeCurrentPendingQuotes() {
-        writePendingQuotes(sessions.list.getSnapshot().current)
+        writePendingQuotes(currentSessionId())
       }
 
       var ignoreUntil = 0
@@ -1002,7 +1198,7 @@ window.__ModuleLoader__.load({
           var el = document.createElement('div')
           el.setAttribute('data-annotation-toast', '')
           el.textContent = msg
-          el.style.cssText = 'position:fixed;z-index:1300;left:50%;bottom:88px;transform:translateX(-50%);max-width:min(420px,calc(100vw - 24px));padding:8px 14px;border-radius:10px;background:var(--dsw-specific-menu,#2c2c2e);border:1px solid var(--dsw-alias-border-inverted);box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);font-family:var(--dsw-font-family,system-ui);font-size:12px;pointer-events:none;'
+          el.style.cssText = 'position:fixed;z-index:1300;left:50%;bottom:88px;transform:translateX(-50%);max-width:min(420px,calc(100vw - 24px));padding:8px 14px;border-radius:10px;background:var(--dsh-ann-surface,#2c2c2e);border:1px solid var(--dsh-ann-border,rgba(0,0,0,.12));box-shadow:var(--dsw-shadow-lv2);color:var(--dsw-alias-label-primary);font-family:var(--dsw-font-family,system-ui);font-size:12px;pointer-events:none;'
           document.body.appendChild(el)
           if (toastTimer !== null) clearTimeout(toastTimer)
           toastTimer = setTimeout(function () {
@@ -1010,6 +1206,70 @@ window.__ModuleLoader__.load({
             if (el.parentNode) el.parentNode.removeChild(el)
           }, 3000)
         } catch (_) { /* toast 失败忽略 */ }
+      }
+
+      // ---------- 指针落点追踪（工具条贴「划选结束时鼠标位置」的下方）----------
+      // 指针坐标是视口坐标，只在「本次划选手势刚结束」的短窗口内可信：
+      // 拖动中持续跟随（buttons 非 0），松开后仍跟随一小段时间，取「最后鼠标位置」。
+      // 键盘 / 双击划选没有拖动轨迹 → trusted 保持 false，回退选区矩形定位。
+      var pointer = { x: 0, y: 0, t: 0, dragging: false, dragged: false, trusted: false }
+      var POINTER_TRUST_MS = 1500
+
+      function notePointer(e) {
+        pointer.x = e.clientX
+        pointer.y = e.clientY
+        pointer.t = Date.now()
+      }
+
+      function onPointerDownTrack(e) {
+        if (e.button !== 0) return
+        pointer.dragging = true
+        pointer.dragged = false
+        pointer.trusted = false
+        notePointer(e)
+      }
+
+      function onPointerMoveTrack(e) {
+        if (pointer.dragging) {
+          if (e.buttons !== 0) {
+            pointer.dragged = true
+            // 确认是真实拖动就立即置可信：不再只在 pointerup 才置位。
+            // 否则「在窗口外松开」时收不到 pointerup，trusted 永远为 false，
+            // 工具条会退回「居中于选区」。
+            pointer.trusted = true
+            notePointer(e)
+          }
+          return
+        }
+        // 松开后到 settle 落位之间的移动也跟随（真正取「最后鼠标位置」）。
+        if (pointer.trusted) notePointer(e)
+      }
+
+      function onPointerUpTrack(e) {
+        if (e.button !== 0) return
+        if (pointer.dragging) {
+          notePointer(e)
+          pointer.trusted = pointer.dragged
+        }
+        pointer.dragging = false
+      }
+
+      document.addEventListener('pointerdown', onPointerDownTrack, true)
+      document.addEventListener('pointermove', onPointerMoveTrack, true)
+      document.addEventListener('pointerup', onPointerUpTrack, true)
+      // 触控 / 系统手势打断时没有 pointerup，用 cancel 收尾（trusted 已在移动中置位）。
+      document.addEventListener('pointercancel', onPointerUpTrack, true)
+
+      /** 当前可信的指针落点；不可信（无拖动 / 已过期）时返回 null。
+       *  越界不再丢弃而是钳到最近边缘：拖动划选时鼠标常会越出视口
+       *  （贴右边缘、拖到窗口外），此时应把工具条贴到对应边缘，
+       *  而不是整个丢掉指针锚点、退回「居中于选区」。 */
+      function livePointer() {
+        if (!pointer.trusted) return null
+        if (Date.now() - pointer.t > POINTER_TRUST_MS) return null
+        var x = Math.max(0, Math.min(pointer.x, window.innerWidth))
+        var y = Math.max(0, Math.min(pointer.y, window.innerHeight))
+        return { x: x, y: y }
       }
 
       // ---------- 选区监听 ----------
@@ -1050,7 +1310,7 @@ window.__ModuleLoader__.load({
         var key = selectionKey(sel)
         var rootEl = annotationRootOf(range.commonAncestorContainer)
         var source = documentSourceOf(range.commonAncestorContainer)
-        if (source !== null && source.sessionId !== sessions.list.getSnapshot().current) rootEl = null
+        if (source !== null && source.sessionId !== currentSessionId()) rootEl = null
         if (rootEl === null) { clearSettle(); closeToolbar(); return }
         if (ui.mode === 'actions' && key === ui.lastKey && text === ui.quote && rootEl === ui.selectionRoot
           && (ui.source && ui.source.sourceUrl) === (source && source.sourceUrl)) { clearSettle(); return }
@@ -1064,10 +1324,14 @@ window.__ModuleLoader__.load({
           if (annotationRootOf(r.commonAncestorContainer) !== rootEl) return
           var currentSource = documentSourceOf(r.commonAncestorContainer)
           if ((currentSource && currentSource.sourceUrl) !== (source && source.sourceUrl)
-            || (source !== null && source.sessionId !== sessions.list.getSnapshot().current)) return
+            || (source !== null && source.sessionId !== currentSessionId())) return
           var rect = r.getBoundingClientRect()
           if (rect.width === 0 || rect.height === 0) return
-          var p = placeAbove(rect, 40)
+          var point = livePointer()
+          var p = placeForSelection(rect, point, 40, ui.barWidth)
+          ui.anchorPoint = point
+          ui.anchorRect = rect
+          ui.anchorRel = point === null ? null : { rx: point.x - rect.left, ry: point.y - rect.bottom }
           if (ui.mode === 'actions' && ui.quote === text && (ui.source && ui.source.sourceUrl) === (source && source.sourceUrl)) {
             ui.lastKey = key
             ui.pos = p
@@ -1135,7 +1399,15 @@ window.__ModuleLoader__.load({
             return
           }
           lostSince = 0
-          var p = placeAbove(rect, 40)
+          // 有指针锚点时按「相对选区矩形的偏移」重算：滚动 / 重排后工具条仍
+          // 停在选区下沿的同一相对位置，不会跳回矩形居中。
+          var p = ui.anchorRel === null
+            ? placeAbove(rect, 40, ui.barWidth)
+            : placeForSelection(rect, {
+              x: rect.left + ui.anchorRel.rx,
+              y: rect.bottom + ui.anchorRel.ry,
+            }, 40, ui.barWidth)
+          ui.anchorRect = rect
           if (Math.abs(p.left - ui.pos.left) + Math.abs(p.top - ui.pos.top) > 2) {
             ui.pos = p
             if (ui.el !== null && ui.el.style) {
@@ -1223,15 +1495,28 @@ window.__ModuleLoader__.load({
       // 提交）——否则等我们执行时消息已提交，拼稿永远太迟。
       document.addEventListener('keydown', onKeyDown, true)
 
+      /** DOM 回退下的提交：服务可用走 submit('queue')，否则向输入区派发合成 Enter，
+       *  由宿主自己的键位表提交（我们 capture 阶段的 onKeyDown 已幂等，不会重复拼块）。 */
       function submitAttached() {
-        var current = sessions.list.getSnapshot().current
-        if (current === undefined) return
-        var scoped = sessions.scope(current)
-        if (scoped === undefined) return
+        var current = currentSessionId()
+        var shell = shellFor(scopeOfSession(current))
+        if (shell !== null) {
+          try {
+            shell.submit('queue')
+            return
+          } catch (err) {
+            console.warn('[annotation] 批注直接提交失败，回退合成 Enter：', err)
+          }
+        }
+        var el = composerInputEl()
+        if (el === null) return
         try {
-          ctx.conversation.input.for(scoped).submit('queue')
+          el.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+            bubbles: true, cancelable: true,
+          }))
         } catch (err) {
-          console.warn('[annotation] 批注直接提交失败：', err)
+          console.warn('[annotation] 合成 Enter 提交失败：', err)
         }
       }
 
@@ -1306,6 +1591,15 @@ window.__ModuleLoader__.load({
           ))
           host.appendChild(bar)
           ui.el = bar
+          // 指针定位要真实宽度才能水平居中；首帧用估算宽度会偏半个工具条，
+          // 挂载后立刻按实测宽度重排一次（同帧内完成，无可见抖动）。
+          if (ui.anchorRect !== null && bar.offsetWidth > 0) {
+            ui.barWidth = bar.offsetWidth
+            var fit = placeForSelection(ui.anchorRect, ui.anchorPoint, bar.offsetHeight || 36, ui.barWidth)
+            ui.pos = fit
+            bar.style.left = fit.left + 'px'
+            bar.style.top = fit.top + 'px'
+          }
         } else if (ui.mode === 'editing') {
           var card = document.createElement('div')
           card.className = 'dsh-ann-card'
@@ -1454,7 +1748,7 @@ window.__ModuleLoader__.load({
             if (r.width === 0 || r.height === 0) continue
             if (r.top > -8 && r.top < window.innerHeight) { anchor = r; break }
           }
-          if (anchor === null && rects.length > 0 && rects[0].width > 0) anchor = rects[0]
+          // 原文完全在视口外时不显示编号气泡（避免钉在屏幕顶部/底部）
           if (anchor !== null) {
             var chip = document.createElement('div')
             chip.className = 'dsh-ann-num'
@@ -1569,9 +1863,17 @@ window.__ModuleLoader__.load({
         ui.pendingAnchor = null
         var range = locateQuote(q.text, q)
         var rect = range !== null ? range.getBoundingClientRect() : null
-        ui.pos = rect !== null && rect.width > 0
-          ? placeAbove(rect, 40)
-          : { left: 8, top: 8 }
+        if (rect !== null && rect.width > 0) {
+          var cardW = 400, cardH = 280
+          var anchorX = rect.left + 10
+          var cl = anchorX - cardW / 2
+          cl = Math.max(8, Math.min(cl, window.innerWidth - cardW - 8))
+          var ct = rect.bottom + 8
+          if (ct + cardH > window.innerHeight - 8) ct = window.innerHeight - cardH - 8
+          ui.pos = { left: Math.round(cl), top: Math.max(8, Math.round(ct)) }
+        } else {
+          ui.pos = { left: 8, top: 8 }
+        }
         render()
       }
 
@@ -1602,34 +1904,57 @@ window.__ModuleLoader__.load({
       }
 
       /** 提交前把批注块拼进 composer 草稿（随回车一起发送）。
-       *  返回 true 表示批注块已在草稿中（本次刚拼入，或之前已拼入未发送）。 */
+       *  返回 true 表示批注块已在草稿中（本次刚拼入，或之前已拼入未发送）。
+       *  服务不可用（inactive context / 作用域未物化）时回退 DOM 注入，绝不静默丢批注。 */
       function attachAndSend(e) {
-        var current = sessions.list.getSnapshot().current
-        if (current === undefined) return false
+        var current = currentSessionId()
+        var scoped = scopeOfSession(current)
+        var shell = shellFor(scoped)
+
+        // ---- 服务路径（首选）----
+        if (shell !== null) {
+          try {
+            var st = shell.state.getSnapshot()
+            var draft = st.draft || ''
+            if (!shouldAttachForEnter(e, draft)) return false
+            if (isCommandDraft(draft)) {
+              showToast(t('toast.skipCommand'))
+              return false
+            }
+            if (hasAnnotationBlock(draft)) {
+              annotationAttached = true
+              return true
+            }
+            var hasQuestion = draft.trim() !== ''
+            var block = buildBlock(hasQuestion)
+            shell.setDraft(block + (hasQuestion ? '\n' + draft : ''))
+            annotationAttached = true
+            console.log('[annotation] 批注块已拼入草稿，回车将随消息发送（' + ui.quotes.length + ' 条）')
+            return true
+          } catch (err) {
+            console.warn('[annotation] 服务路径拼稿失败，回退 DOM 注入：', err)
+          }
+        }
+
+        // ---- DOM 回退路径（服务 inactive 时的兜底）----
+        // 宿主编辑器就是 [data-composer-input] 可编辑区；把批注块插到草稿开头，
+        // 随后宿主自己的 Enter / 发送按钮照常提交，批注随消息一起发出。
         try {
-          var scoped = sessions.scope(current)
-          if (scoped === undefined) return false
-          var shell = ctx.conversation.input.for(scoped)
-          var st = shell.state.getSnapshot()
-          var draft = st.draft || ''
-          if (!shouldAttachForEnter(e, draft)) return false
-          // 斜杠命令不拼批注（issue #20）：批注块前置会破坏命令 token 前缀，
-          // 宿主 watchClaim 释放声明后 /goal 被降级为普通消息；后置追加则会
-          // 把块原样并入命令参数。命令草稿原样放行，批注保留待下一条消息。
-          if (isCommandDraft(draft)) {
+          var domDraft = domDraftText()
+          if (!shouldAttachForEnter(e, domDraft)) return false
+          if (isCommandDraft(domDraft)) {
             showToast(t('toast.skipCommand'))
             return false
           }
-          // 草稿已含批注块（上次追加未发送）→ 不重复追加（zh/en 双哨兵）。
-          if (hasAnnotationBlock(draft)) {
+          if (hasAnnotationBlock(domDraft)) {
             annotationAttached = true
             return true
           }
-          var hasQuestion = draft.trim() !== ''
-          var block = buildBlock(hasQuestion)
-          shell.setDraft(block + (hasQuestion ? '\n' + draft : ''))
+          var hasQ = domDraft.trim() !== ''
+          if (!domAttachBlock(buildBlock(hasQ), hasQ)) return false
           annotationAttached = true
-          console.log('[annotation] 批注块已拼入草稿，回车将随消息发送（' + ui.quotes.length + ' 条）')
+          domAttached = true
+          console.log('[annotation] 批注块已注入输入区（DOM 回退），回车将随消息发送（' + ui.quotes.length + ' 条）')
           return true
         } catch (err) {
           console.warn('[annotation] 批注拼稿失败：', err)
@@ -1723,13 +2048,16 @@ window.__ModuleLoader__.load({
         ui.busy = false
         ui.lastKey = ''
         ui.editingId = null
+        ui.anchorRel = null
+        ui.anchorPoint = null
+        ui.anchorRect = null
         render()
       }
 
       // ---------- 输入框旁的批注标签（N 条批注 · 悬浮看全部内容） ----------
       var chipLayer = document.createElement('div')
       chipLayer.setAttribute('data-annotation-chip', '')
-      chipLayer.style.cssText = 'position:fixed;z-index:1150;display:none;align-items:center;gap:4px;height:22px;padding:0 10px;border-radius:11px;border:1px solid var(--dsw-alias-border-inverted);background:var(--dsw-specific-menu,#2c2c2e);box-shadow:var(--dsw-shadow-lv3);font-family:var(--dsw-font-family,system-ui);font-size:11px;color:var(--dsw-alias-label-primary);cursor:default;animation:dsh-ann-pop .12s var(--ds-ease-in-out, ease);'
+      chipLayer.style.cssText = 'position:fixed;z-index:1150;display:none;align-items:center;gap:4px;height:22px;padding:0 10px;border-radius:11px;border:1px solid var(--dsh-ann-border,rgba(0,0,0,.12));background:var(--dsh-ann-surface,#2c2c2e);box-shadow:var(--dsw-shadow-lv2);font-family:var(--dsw-font-family,system-ui);font-size:11px;color:var(--dsw-alias-label-primary);cursor:default;animation:dsh-ann-pop .12s var(--ds-ease-in-out, ease);'
       document.body.appendChild(chipLayer)
       var tipLayer = document.createElement('div')
       tipLayer.setAttribute('data-annotation-tip-layer', '')
@@ -1746,11 +2074,24 @@ window.__ModuleLoader__.load({
           return
         }
         chipLayer.textContent = ''
-        var b = document.createElement('b')
-        b.style.cssText = 'color:var(--dsw-alias-text-accent,#4c9aff);font-weight:700;'
-        b.textContent = String(ui.quotes.length)
-        chipLayer.appendChild(b)
-        chipLayer.appendChild(document.createTextNode(t('chip.count')))
+        var ic = document.createElement('span')
+        ic.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;opacity:.7;flex:none;'
+        ic.innerHTML = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><path d="M2 3h8M2 6h8M2 9h5"/></svg>'
+        chipLayer.appendChild(ic)
+        chipLayer.appendChild(document.createTextNode(' ' + ui.quotes.length + ' 条批注'))
+        var closeX = document.createElement('span')
+        closeX.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;margin-left:2px;cursor:pointer;opacity:.6;flex:none;border-radius:7px;'
+        closeX.innerHTML = '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M2 2l6 6M8 2L2 8"/></svg>'
+        closeX.addEventListener('click', function (ev) {
+          ev.stopPropagation()
+          ui.quotes = []
+          annotationAttached = false
+          writeCurrentPendingQuotes()
+          tipLayer.textContent = ''
+          updateChip()
+          renderMarkers()
+        })
+        chipLayer.appendChild(closeX)
         var card = document.querySelector('[data-composer-card]')
         if (card !== observedComposer) {
           if (composerObserver !== null) composerObserver.disconnect()
@@ -1765,7 +2106,7 @@ window.__ModuleLoader__.load({
           return
         }
         var w = chipLayer.offsetWidth || 80
-        chipLayer.style.left = Math.max(8, r.right - w - 12) + 'px'
+        chipLayer.style.left = (r.left + 12) + 'px'
         chipLayer.style.top = Math.max(8, r.top - 30) + 'px'
         chipLayer.style.display = 'flex'
       }
@@ -1794,47 +2135,107 @@ window.__ModuleLoader__.load({
         tipLayer.textContent = ''
         var el = document.createElement('div')
         el.className = 'dsh-ann-tip'
-        el.style.cssText = 'position:fixed;z-index:1160;width:300px;max-width:calc(100vw - 16px);padding:10px 12px;border-radius:12px;border:1px solid var(--dsw-alias-border-inverted);background:var(--dsw-specific-menu,#2c2c2e);box-shadow:var(--dsw-shadow-lv3);font-family:var(--dsw-font-family,system-ui);font-size:12px;color:var(--dsw-alias-label-primary);'
-        var head = document.createElement('div')
-        head.style.cssText = 'font-weight:600;margin-bottom:6px;'
-        head.textContent = t('tip.title', { n: ui.quotes.length })
-        el.appendChild(head)
+        el.style.cssText = 'position:fixed;z-index:1160;width:280px;max-width:min(320px,calc(100vw - 24px));padding:8px 10px;border-radius:12px;border:1px solid var(--dsh-ann-border,rgba(0,0,0,.12));background:var(--dsh-ann-surface,#2c2c2e);box-shadow:var(--dsw-shadow-lv2);font-family:var(--dsw-font-family,system-ui);font-size:12px;color:var(--dsw-alias-label-primary);'
         for (var i = 0; i < ui.quotes.length; i++) {
           var q = ui.quotes[i]
           var item = document.createElement('div')
-          item.style.cssText = 'padding:6px 0;border-top:1px solid var(--dsw-alias-border-strong,#444);'
+          item.style.cssText = 'display:flex;align-items:flex-start;gap:8px;padding:8px 0;border-top:' + (i === 0 ? 'none' : '1px solid var(--dsw-alias-border-strong,rgba(128,128,128,.15))') + ';cursor:pointer;border-radius:6px;margin:0 -4px;padding-left:4px;padding-right:4px;'
           var num = document.createElement('span')
-          num.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;margin-right:6px;border-radius:8px;background:var(--dsw-alias-text-accent,#4c9aff);color:#fff;font-size:10px;font-weight:700;'
-          num.textContent = String(i + 1)
-          var body = document.createElement('span')
-          body.style.cssText = 'font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary);'
-          body.textContent = truncate(quoteWithSource(q), 100)
+          num.style.cssText = 'font-size:12px;color:var(--dsw-alias-label-tertiary);flex:none;min-width:20px;line-height:1.5;'
+          num.textContent = (i + 1) + '。'
           item.appendChild(num)
-          item.appendChild(body)
+          var mid = document.createElement('div')
+          mid.style.cssText = 'flex:1;min-width:0;'
+          var label = document.createElement('div')
+          label.style.cssText = 'font-size:10px;color:var(--dsw-alias-label-tertiary);margin-bottom:2px;'
+          label.textContent = '所选文本：'
+          mid.appendChild(label)
+          var quote = document.createElement('div')
+          quote.style.cssText = 'font-size:12px;line-height:1.5;color:var(--dsw-alias-label-primary);word-break:break-word;margin-top:2px;'
+          quote.textContent = quoteWithSource(q)
+          mid.appendChild(quote)
           if (q.note !== undefined && q.note.trim() !== '') {
+            var noteLabel = document.createElement('div')
+            noteLabel.style.cssText = 'font-size:11px;color:var(--dsw-alias-label-tertiary);line-height:1.4;margin-top:6px;'
+            noteLabel.textContent = '用户评论：'
+            mid.appendChild(noteLabel)
             var note = document.createElement('div')
-            note.style.cssText = 'font-size:11px;color:var(--dsw-alias-label-secondary);margin:2px 0 0 22px;word-break:break-word;'
-            note.textContent = t('tip.notePrefix') + truncate(q.note, 60)
-            item.appendChild(note)
+            note.style.cssText = 'font-size:12px;line-height:1.5;color:var(--dsw-alias-label-primary);word-break:break-word;margin-top:2px;'
+            note.textContent = q.note
+            mid.appendChild(note)
           }
+          item.appendChild(mid)
+          ;(function (qq) {
+            item.addEventListener('click', function () {
+              try {
+                var rng = locateQuote(qq.text, qq)
+                if (rng !== null) {
+                  var node = rng.startContainer
+                  while (node !== null && node.nodeType !== 1) node = node.parentNode
+                  if (node !== null) {
+                    node.scrollIntoView({ block: 'center', behavior: 'smooth' })
+                    tipLayer.textContent = ''
+                  }
+                }
+              } catch (_) {}
+            })
+          })(q)
+          var actions = document.createElement('div')
+          actions.style.cssText = 'display:flex;flex-direction:row;gap:4px;flex:none;margin-top:2px;'
+          var editBtn = document.createElement('button')
+          editBtn.type = 'button'
+          editBtn.title = '编辑批注'
+          editBtn.style.cssText = 'width:26px;height:26px;border:none;background:transparent;cursor:pointer;border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary);'
+          editBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2.5l2 2L5 11l-2.5.5L3.5 9z"/></svg>'
+          ;(function (qq) {
+            editBtn.addEventListener('click', function (ev) {
+              ev.stopPropagation()
+              tipLayer.textContent = ''
+              // 先平滑滚动到原文位置，等滚完再弹窗编辑
+              try {
+                var rng = locateQuote(qq.text, qq)
+                if (rng !== null) {
+                  var node = rng.startContainer
+                  while (node !== null && node.nodeType !== 1) node = node.parentNode
+                  if (node !== null) {
+                    node.scrollIntoView({ block: 'center', behavior: 'smooth' })
+                    // center 后再往上推一点，给下方弹窗腾空间
+                    setTimeout(function () {
+                      try { window.scrollBy({ top: -260, behavior: 'smooth' }) } catch (_) {}
+                    }, 50)
+                  }
+                }
+              } catch (_) {}
+              // 等滚动动画完成后再打开编辑器（此时 rect 位置才准确）
+              setTimeout(function () { openEditorFor(qq) }, 500)
+            })
+          })(q)
+          actions.appendChild(editBtn)
           var del = document.createElement('button')
           del.type = 'button'
-          del.textContent = t('tip.del')
-          del.style.cssText = 'margin-left:8px;background:transparent;border:1px solid rgba(255,107,107,.4);color:#ff8a8a;border-radius:6px;font-size:10px;cursor:pointer;padding:1px 6px;'
+          del.title = '删除此批注'
+          del.style.cssText = 'width:26px;height:26px;border:none;background:transparent;cursor:pointer;border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary);'
+          del.innerHTML = '<svg width="16" height="16" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 3.5h9M5 3.5V2h4v1.5M3.5 3.5l.7 8.5h5.6l.7-8.5M5.8 6v3.5M8.2 6v3.5"/></svg>'
           ;(function (qid) {
             del.addEventListener('click', function (ev) {
               ev.stopPropagation()
               removeQuote(qid)
+              tipLayer.textContent = ''
+              showChipTip()
             })
           })(q.id)
-          item.appendChild(del)
+          actions.appendChild(del)
+          item.appendChild(actions)
           el.appendChild(item)
         }
         tipLayer.appendChild(el)
+        // 定位：右对齐到 chipLayer 右边缘，再 clamp 到视口内
         var r2 = chipLayer.getBoundingClientRect()
-        var w2 = 300
+        var w2 = Math.min(el.offsetWidth || 280, window.innerWidth - 16)
         var h2 = el.offsetHeight || 120
-        var left = Math.max(8, Math.min(r2.left, window.innerWidth - w2 - 8))
+        var left = r2.left
+        if (left < 8) left = 8
+        if (left + w2 > window.innerWidth - 8) left = window.innerWidth - w2 - 8
         var top = r2.top - h2 - 6
         if (top < 8) top = r2.bottom + 6
         el.style.left = left + 'px'
@@ -1842,54 +2243,80 @@ window.__ModuleLoader__.load({
         el.style.width = w2 + 'px'
       }
 
-      // ---------- 发送完成监听（草稿从有内容变空 → 清空批注集） ----------
+            // ---------- 发送完成监听（草稿从有内容变空 → 清空批注集） ----------
       var inputUnsub = null
       // 仅当批注块真正拼入过草稿（用户按过回车）才在草稿清空时清除批注，
       // 避免普通草稿编辑（打字后删字）误触发「已发送」判定而清空批注集。
       var annotationAttached = false
+      // DOM 回退注入路径标记（服务 inactive 时走）：其清空由 DOM 观察器负责。
+      var domAttached = false
       var inputWatchTimer = null
+      var domWatchObserver = null
+
+      /** 发送完成：脚标消失、编号下次从 1 开始，并给刚发出的气泡贴「N 条批注」标签。 */
+      function clearSentQuotes() {
+        if (ui.quotes.length === 0) return
+        var sentItems = ui.quotes.map(function (q) {
+          return { text: quoteWithSource(q), note: q.note || '' }
+        })
+        ui.quotes = []
+        annotationAttached = false
+        domAttached = false
+        writeCurrentPendingQuotes()
+        tipLayer.textContent = ''
+        updateChip()
+        renderMarkers()
+        pendingDeco.push({ items: sentItems })
+        kickDecorate()
+      }
+
+      /** 服务订阅路径：草稿「有 → 空」迁移即发送完成。 */
       function tryWatchInputDraft(id) {
         try {
-          var sc = sessions.scope(id)
-          if (sc === undefined) return false
-          var sh = ctx.conversation.input.for(sc)
-          if (sh === undefined || sh === null || typeof sh.state.subscribe !== 'function') return false
+          var sh = shellFor(scopeOfSession(id))
+          if (sh === null || typeof sh.state.subscribe !== 'function') return false
           var hadDraft = false
           inputUnsub = sh.state.subscribe(function () {
             var d = (sh.state.getSnapshot().draft || '').trim()
             var wasHad = hadDraft
             hadDraft = d !== ''
             if (ui.quotes.length === 0) return
-            // 发送完成：草稿从有内容变空 → 脚标消失、编号下次从 1 开始；
-            // 同时在刚发出的用户消息气泡上贴「N 条批注」标签。
-            if (wasHad && d === '' && annotationAttached) {
-              var sentItems = ui.quotes.map(function (q) {
-                return { text: quoteWithSource(q), note: q.note || '' }
-              })
-              ui.quotes = []
-              annotationAttached = false
-              writeCurrentPendingQuotes()
-              tipLayer.textContent = ''
-              updateChip()
-              renderMarkers()
-              pendingDeco.push({ items: sentItems })
-              kickDecorate()
-            }
+            if (wasHad && d === '' && annotationAttached) clearSentQuotes()
           })
           return true
         } catch (_) { inputUnsub = null; return false }
       }
-      // 发送清空只认这里的「草稿有→空」迁移（装饰扫描不再兜底，见 decorateAll）。
+
+      /** DOM 回退订阅：直接观察 [data-composer-input] 的文本，覆盖服务 inactive 场景。
+       *  DOM 观察器常驻（服务恢复后二者幂等：clearSentQuotes 首行即空集短路）。 */
+      function ensureDomWatch() {
+        if (domWatchObserver !== null) return
+        if (typeof MutationObserver !== 'function') return
+        var hadDom = false
+        domWatchObserver = new MutationObserver(function () {
+          if (ui.quotes.length === 0) { hadDom = false; return }
+          var d = domDraftText().trim()
+          var wasHad = hadDom
+          hadDom = d !== ''
+          // 只认「有 → 空」迁移，且批注块真的拼入过草稿（annotationAttached）。
+          // 不区分服务路径与 DOM 回退路径：两条路径下输入区文本都会「有→空」，
+          // 而会话切换/刷新只重渲染历史消息、不碰输入区草稿，不会误判（issue #28）。
+          if (wasHad && d === '' && annotationAttached) clearSentQuotes()
+        })
+        domWatchObserver.observe(document.body, { childList: true, subtree: true, characterData: true })
+      }
+      // 发送清空认两路「草稿有→空」迁移：服务订阅（首选）+ DOM 观察（回退）。
       // 插件可能先于会话加载完成：current 未定、scope/input 尚不可用时订阅会失败，
       // 必须每秒重试直到挂上，否则一次发送的清空被漏掉，已发送的批注会永远留在
       // 待发送集里，之后每次 Enter 都重新拼进草稿。
       function watchInputDraft() {
         if (inputWatchTimer !== null) { clearInterval(inputWatchTimer); inputWatchTimer = null }
         if (typeof inputUnsub === 'function') { inputUnsub(); inputUnsub = null }
-        var id = sessions.list.getSnapshot().current
+        ensureDomWatch()
+        var id = currentSessionId()
         if (id !== undefined && tryWatchInputDraft(id)) return
         inputWatchTimer = setInterval(function () {
-          var cur = sessions.list.getSnapshot().current
+          var cur = currentSessionId()
           if (cur !== undefined && tryWatchInputDraft(cur)) {
             clearInterval(inputWatchTimer)
             inputWatchTimer = null
@@ -1998,13 +2425,13 @@ window.__ModuleLoader__.load({
         var tag = document.createElement('span')
         tag.setAttribute('data-annotation-bubble-tag', '')
         tag.textContent = t('bubble.tag', { n: items.length })
-        tag.style.cssText = 'display:inline-flex;align-items:center;height:18px;padding:0 8px;margin:4px 0 0 4px;border-radius:9px;border:1px solid var(--dsw-alias-border-inverted);background:var(--dsw-specific-menu,#2c2c2e);color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-family,system-ui);font-size:10px;cursor:default;'
+        tag.style.cssText = 'display:inline-flex;align-items:center;height:18px;padding:0 8px;margin:4px 0 0 4px;border-radius:9px;border:1px solid var(--dsh-ann-border,rgba(0,0,0,.12));background:var(--dsh-ann-surface,#2c2c2e);color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-family,system-ui);font-size:10px;cursor:default;'
         ;(function (list) {
           tag.addEventListener('mouseenter', function () {
             tipLayer.textContent = ''
             var el = document.createElement('div')
             el.className = 'dsh-ann-tip'
-            el.style.cssText = 'position:fixed;z-index:1160;width:300px;max-width:calc(100vw - 16px);padding:10px 12px;border-radius:12px;border:1px solid var(--dsw-alias-border-inverted);background:var(--dsw-specific-menu,#2c2c2e);box-shadow:var(--dsw-shadow-lv3);font-family:var(--dsw-font-family,system-ui);font-size:12px;color:var(--dsw-alias-label-primary);'
+            el.style.cssText = 'position:fixed;z-index:1160;width:300px;max-width:calc(100vw - 16px);padding:10px 12px;border-radius:12px;border:1px solid var(--dsh-ann-border,rgba(0,0,0,.12));background:var(--dsh-ann-surface,#2c2c2e);box-shadow:var(--dsw-shadow-lv2);font-family:var(--dsw-font-family,system-ui);font-size:12px;color:var(--dsw-alias-label-primary);'
             var head = document.createElement('div')
             head.style.cssText = 'font-weight:600;margin-bottom:6px;'
             head.textContent = t('bubble.title', { n: list.length })
@@ -2169,7 +2596,7 @@ window.__ModuleLoader__.load({
       function makeReplyChip(num, items) {
         var chip = document.createElement('span')
         chip.setAttribute('data-annotation-reply-chip', '')
-        chip.style.cssText = 'display:inline-flex;align-items:center;height:18px;padding:0 6px;margin:0 2px;border-radius:9px;border:1px solid var(--dsw-alias-border-inverted);background:var(--dsw-specific-menu,#2c2c2e);color:var(--dsw-alias-text-accent,#4c9aff);font-family:var(--dsw-font-family,system-ui);font-size:11px;font-weight:600;cursor:default;vertical-align:middle;'
+        chip.style.cssText = 'display:inline-flex;align-items:center;height:18px;padding:0 6px;margin:0 2px;border-radius:9px;border:1px solid var(--dsh-ann-border,rgba(0,0,0,.12));background:var(--dsh-ann-surface,#2c2c2e);color:var(--dsw-alias-text-accent,#4c9aff);font-family:var(--dsw-font-family,system-ui);font-size:11px;font-weight:600;cursor:default;vertical-align:middle;'
         chip.textContent = 'Annotation ' + num
         var item = items[num - 1]
         var grace = null
@@ -2184,7 +2611,7 @@ window.__ModuleLoader__.load({
           tipLayer.textContent = ''
           var el = document.createElement('div')
           el.className = 'dsh-ann-tip'
-          el.style.cssText = 'position:fixed;z-index:1160;width:320px;max-width:calc(100vw - 16px);padding:10px 12px;border-radius:12px;border:1px solid var(--dsw-alias-border-inverted);background:var(--dsw-specific-menu,#2c2c2e);box-shadow:var(--dsw-shadow-lv3);font-family:var(--dsw-font-family,system-ui);font-size:12px;color:var(--dsw-alias-label-primary);'
+          el.style.cssText = 'position:fixed;z-index:1160;width:320px;max-width:calc(100vw - 16px);padding:10px 12px;border-radius:12px;border:1px solid var(--dsh-ann-border,rgba(0,0,0,.12));background:var(--dsh-ann-surface,#2c2c2e);box-shadow:var(--dsw-shadow-lv2);font-family:var(--dsw-font-family,system-ui);font-size:12px;color:var(--dsw-alias-label-primary);'
           var head = document.createElement('div')
           head.style.cssText = 'font-weight:600;margin-bottom:6px;'
           head.textContent = item !== undefined ? t('reply.headWithQuote', { n: num }) : t('reply.headNoQuote', { n: num })
@@ -2227,6 +2654,9 @@ window.__ModuleLoader__.load({
        *  不依赖发送事件链：异步渲染、刷新后的历史消息都能被覆盖。 */
       function decorateAll() {
         try {
+          // 每秒轮询 + 每个 mutation 批次都会走到这里：即使残留层是在本实例
+          // 启动之后才被别的实例塞进来的，也会在一个周期内收敛回单份。
+          sweepStrayLayers()
           var rows = allMessageRows()
           for (var i = rows.length - 1; i >= 0; i--) {
             var el = rows[i]
@@ -2292,10 +2722,11 @@ window.__ModuleLoader__.load({
       }
 
       // ---------- 待发送批注按会话恢复 ----------
-      var lastSessionId = sessions.list.getSnapshot().current
+      var lastSessionId = currentSessionId()
       ui.quotes = readPendingQuotes(lastSessionId)
-      var unsub = sessions.list.subscribe(function () {
-        var cur = sessions.list.getSnapshot().current
+      var unsub = null
+      setInterval(function () {
+        var cur = currentSessionId()
         if (cur === lastSessionId) return
         writePendingQuotes(lastSessionId)
         lastSessionId = cur
@@ -2317,7 +2748,7 @@ window.__ModuleLoader__.load({
       updateChip()
 
       // ---------- 清理 ----------
-      return function () {
+      function teardown() {
         clearSettle()
         document.removeEventListener('selectionchange', onSelection)
         document.removeEventListener('pointerdown', onDocPointerDown, true)
@@ -2330,7 +2761,12 @@ window.__ModuleLoader__.load({
         window.removeEventListener('scroll', onLayoutChange, true)
         window.removeEventListener('resize', onLayoutChange)
         host.removeEventListener('pointerdown', onHostPointerDown)
+        document.removeEventListener('pointerdown', onPointerDownTrack, true)
+        document.removeEventListener('pointermove', onPointerMoveTrack, true)
+        document.removeEventListener('pointerup', onPointerUpTrack, true)
+        document.removeEventListener('pointercancel', onPointerUpTrack, true)
         observer.disconnect()
+        if (domWatchObserver !== null) { domWatchObserver.disconnect(); domWatchObserver = null }
         if (typeof unsub === 'function') unsub()
         if (inputWatchTimer !== null) { clearInterval(inputWatchTimer); inputWatchTimer = null }
         if (typeof inputUnsub === 'function') inputUnsub()
@@ -2341,7 +2777,20 @@ window.__ModuleLoader__.load({
         tipLayer.remove()
         host.remove()
         overlay.remove()
+        // 仅当自己仍是「当前实例」时才清场：旧实例被延迟 dispose 时（fiber 卸载
+        // 晚于新实例 apply），以旧 host/overlay 为基准的 sweep 会把新实例的浮层
+        // 误判成残留删掉。不是当前实例就静默退出。
+        if (window.__dshAnnotationTeardown === teardown) sweepStrayLayers()
+        // 解除全局 teardown 引用，避免下一实例撤掉自己。
+        if (window.__dshAnnotationTeardown === teardown) window.__dshAnnotationTeardown = null
       }
+      // fiber 重载 / 热重载时由下一实例调用，撤销本实例的全局副作用。
+      window.__dshAnnotationTeardown = teardown
+      try {
+        var reg2 = window[INSTANCE_REGISTRY]
+        if (Array.isArray(reg2)) reg2.push(teardown)
+      } catch (_) {}
+      return teardown
     }
 
     exports.name = '@changfenhuang/dsh-annotation'
