@@ -66,6 +66,17 @@
 //   停止/排队/插话、输入区 aria-disabled、或无待发送批注时立即把 disabled 还回去。
 //   宿主拒绝提交（附件还在上传等）时 toast 如实告知，不假装成功。
 //
+// v1.4.22 · v1.4.21 的加固（审计「会不会绕过宿主守卫」时查出的两个窄口子）：
+//   1. **有附件时不接管**：有附件时宿主的 empty 不成立（empty = 草稿空 && 无附件），
+//      按钮仍被禁用就只可能是「附件还在上传」（uploadsPending）——那时接管等于绕过宿主的
+//      守卫。现在直接让开，由宿主自己的错误通知说明原因。
+//   2. **提交途中不重新接管**：宿主靠 primaryDisabled 里的 machineBusy 防止「提交途中再
+//      提交」，我们摘掉了 disabled 就得自己补这道闸，否则双击的第二下会在提交途中再喂一次
+//      enter（宿主的 submit(mode) 不幂等，mode="queue" 会把第二条排进队列）。现在从提交
+//      那一刻起上闸，直到 pending 批注被消费（或用户重新输入 / 兜底 5s 超时）才解锁。
+//   3. **还原 disabled 时要求按钮仍是「普通发送」按钮**：运行中它会变成停止按钮，误设
+//      disabled 会把「停止」点不了。
+//
 // 消息格式（zh）：我批注了以下 N 处内容…\n\n1. 原文\n   批注：…\n\n
 //           请用「Annotation 1：…」…\n\n提问：
 // （en 用 I annotated the following N passage(s)… + Note: … + Ask:；
@@ -1562,19 +1573,55 @@ window.__ModuleLoader__.load({
         return (text || '').trim() === ''
       }
 
+      /** 是否是宿主那个「普通发送」按钮（运行中的停止 / 排队 / 插话按钮都不算）。 */
+      function isPlainSendButton(button) {
+        var label = button.getAttribute('aria-label')
+        return label === '发送消息' || label === 'Send message'
+      }
+
+      /** composer 里是否已经有附件。附件条的 group aria-label 只在有附件时才渲染
+       *  （dsh-client-ui-attachment: railItems.length > 0 && <AttachmentRail>，
+       *   labels.group = t("attachment.pending")）。
+       *  有附件时宿主的 empty 不成立（empty = 草稿空 && 无附件），按钮仍被禁用就只可能是
+       *  「附件还在上传」（uploadsPending）——那种情况不接管，免得绕过宿主的守卫。 */
+      function hasAttachments() {
+        return document.querySelector(
+          '[data-composer-card] [aria-label="待发送附件"],'
+          + '[data-composer-card] [aria-label="Pending attachments"]') !== null
+      }
+
+      // 我们刚提交过、还在等宿主结算的窗口：这期间不重新接管按钮。宿主靠
+      // primaryDisabled 里的 machineBusy 达到同样目的，而我们摘掉了 disabled，必须自己补上
+      // 这道闸——否则双击的第二下会在提交途中再喂一次 enter（宿主的 submit(mode) 不幂等，
+      // mode="queue" 会把第二条排进队列）。
+      var sendInFlight = false
+      var sendInFlightSince = 0
+      var SEND_IN_FLIGHT_TIMEOUT = 5000
+
+      function sendStillInFlight() {
+        if (!sendInFlight) return false
+        // 结算完成的信号：待发送批注已被消费；或用户又开始输入（按钮交回宿主）；
+        // 或兜底超时，避免任何异常路径把它永久卡住。
+        if (ui.quotes.length === 0 || !draftIsEmpty()
+          || Date.now() - sendInFlightSince > SEND_IN_FLIGHT_TIMEOUT) {
+          sendInFlight = false
+        }
+        return sendInFlight
+      }
+
       /** 只接管「空草稿的纯批注」这一种情况：
-       *  - 有批注待发送；
+       *  - 有批注待发送，且上一次从按钮发出的批注已经结算完（sendStillInFlight）；
        *  - 按钮仍是宿主的普通发送按钮（运行中的停止 / 排队 / 插话按钮一律不碰）；
        *  - 草稿为空；
-       *  - 输入区没有被宿主置为不可编辑（会话只读 / 父会话离线时 aria-disabled="true"）。
-       *  其余禁用原因（附件还在上传 uploadsPending 等）无法从 DOM 区分，交给点击时
-       *  宿主的拒绝 + toast 兜底，见 onSendButtonActivate。 */
+       *  - 输入区没有被宿主置为不可编辑（会话只读 / 父会话离线时 aria-disabled="true"）；
+       *  - 没有附件（有附件时按钮被禁用的原因不是 empty，而是附件还在上传）。 */
       function canOwnSendButton(button) {
         if (ui.quotes.length === 0) return false
-        var label = button.getAttribute('aria-label')
-        if (label !== '发送消息' && label !== 'Send message') return false
+        if (sendStillInFlight()) return false
+        if (!isPlainSendButton(button)) return false
         var input = composerInputEl()
         if (input !== null && input.getAttribute('aria-disabled') === 'true') return false
+        if (hasAttachments()) return false
         return draftIsEmpty()
       }
 
@@ -1600,19 +1647,21 @@ window.__ModuleLoader__.load({
         if (prev === null || !prev.isConnected) return
         if (prev.getAttribute('data-dsh-ann-enabled') !== '1') return
         prev.removeAttribute('data-dsh-ann-enabled')
-        // 只有草稿仍是空的才把 disabled 还回去：用户若在这期间输入了文字，宿主
-        // 自己已经把按钮恢复为可用，这里不能覆盖掉。
-        if (draftIsEmpty()) prev.disabled = true
+        // 只有「草稿仍是空的」且「按钮仍是普通发送按钮」才把 disabled 还回去：
+        // 用户若在这期间输入了文字，宿主自己已把按钮恢复为可用；而运行中按钮会变成停止
+        // 按钮，那时把 disabled 设回去会把「停止」点不了。
+        if (draftIsEmpty() && isPlainSendButton(prev)) prev.disabled = true
       }
 
       /** 卸载时把按钮还回宿主，否则插件停用后按钮会留在「看起来可用、点了没反应」的状态。 */
       function releaseSendButton() {
         var prev = sendBtnState.el
         sendBtnState.el = null
+        sendInFlight = false
         if (prev === null || !prev.isConnected) return
         if (prev.getAttribute('data-dsh-ann-enabled') !== '1') return
         prev.removeAttribute('data-dsh-ann-enabled')
-        if (draftIsEmpty()) prev.disabled = true
+        if (draftIsEmpty() && isPlainSendButton(prev)) prev.disabled = true
       }
 
       /** 按钮激活（鼠标 / 触控 / 辅助技术都会产生 click）：宿主自己会因为 empty 而
@@ -1625,12 +1674,17 @@ window.__ModuleLoader__.load({
         e.preventDefault()
         e.stopPropagation()
         if (!attachAndSend({ ctrlKey: false, metaKey: false })) return
+        // 立刻上闸：从这一刻到 pending 被消费之间不再重新接管按钮（见 sendStillInFlight）。
+        sendInFlight = true
+        sendInFlightSince = Date.now()
         var shell = shellFor(scopeOfSession(currentSessionId()))
         if (shell === null) { submitAttached(); return }
         try {
           shell.submit('queue')
         } catch (err) {
-          // 宿主拒绝（附件未上传完 / 会话不可写等）：如实告知，不假装成功。
+          // 宿主同步抛错时如实告知，不假装成功。异步失败由宿主自己的错误通知呈现
+          // （例如附件未上传完：sendSession / serializeDraftAttachments 抛错后经
+          //   notify("error", …) 显示），这里只兜同步抛出的情况。
           console.warn('[annotation] 批注提交被宿主拒绝：', err)
           showToast(t('toast.sendBlocked') + (err && err.message ? err.message : err))
         }

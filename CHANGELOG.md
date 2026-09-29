@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.4.22] - 2026-09-30
+
+### 加固（v1.4.21 的审计结论）
+
+v1.4.21 让「有批注 + 草稿为空」时可以直接点发送，做法是摘掉宿主发送按钮的 `disabled`
+并接管 `click`。审计「这是否绕过了宿主的守卫」时查出两个窄口子，本版补上：
+
+- **有附件时不再接管**：宿主禁用的四个原因里，`empty` 的定义是
+  `draft.trim() === '' && attachments.length === 0`——所以「有附件 + 草稿文本为空 + 按钮被
+  禁用」只可能是 `uploadsPending`（附件还在上传）。此前会接管，等于绕过宿主的这道守卫；
+  现在直接让开，由宿主自己的错误通知（`file.stillUploading`）说明原因。判定用附件条的
+  group `aria-label`（`attachment.pending`，rail 只在有附件时渲染），不依赖哈希类名。
+- **提交途中不再重新接管**：宿主靠 `primaryDisabled` 里的 `machineBusy` 防止「提交途中再
+  提交」，我们摘掉了 `disabled` 就必须自己补这道闸——否则双击的第二下会在提交途中再喂一次
+  `enter`（宿主的 `submit(mode)` 不幂等，`mode="queue"` 会把第二条排进队列）。现在从提交那
+  一刻起上闸，直到 pending 批注被消费（或用户重新输入、或兜底 5s 超时）才解锁。
+- **还原 `disabled` 时要求按钮仍是「普通发送」按钮**：运行中它会变成停止按钮，此前在极端
+  时序下可能把 `disabled` 设回去，导致「停止」点不了。现在 `syncSendButton` 与
+  `releaseSendButton` 都先确认按钮仍是普通发送按钮、且草稿仍为空才还原。
+
+另外把「宿主同步抛错」与「宿主异步失败」的区别写清楚：`shell.submit()` 本身不抛
+（它只是往输入机喂一个 `enter` 事件），附件未上传完之类的失败发生在下潜的
+`sendSession` / `serializeDraftAttachments` 里，经 `notify("error", …)` 由宿主自己呈现；
+插件的 toast 只兜同步抛出的情况，不再重复提示。
+
+### 测试
+- `test/send-button.test.mjs` 扩到覆盖三道守卫（附件 / 在途闸 / 还原条件）与
+  `isPlainSendButton`、`hasAttachments`、`sendStillInFlight` 的独立行为。
+- 全套件 **34/34 全绿**。
+
 ## [1.4.21] - 2026-09-30
 
 ### 修复
