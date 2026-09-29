@@ -34,7 +34,7 @@ function harness(lang, draft, sourcePath) {
     // markFreshBubble）。它是 attachAndSend 的自由变量，harness 必须给桩，否则会抛
     // ReferenceError 被 try/catch 吞掉 → attachAndSend 变成返回 false。
     function markFreshBubble() {}
-    ${['buildBlock', 'shouldAttachForEnter', 'isCommandDraft', 'attachAndSend', 'hideAnnotationBlock', 'parseItemsFromBubble'].map(fn).join('\n')}
+    ${['buildBlock', 'shouldAttachForEnter', 'isCommandDraft', 'attachAndSend', 'cutRange', 'pruneEmpty', 'hideAnnotationBlock', 'parseItemsFromBubble'].map(fn).join('\n')}
     return { setLang, attachAndSend, hideAnnotationBlock, parseItemsFromBubble }
   `)(shell, document, { SHOW_TEXT: 4 }, sourcePath)
   api.setLang(lang)

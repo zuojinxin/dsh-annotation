@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.4.24] - 2026-09-30
+
+### 修复
+- **点发送的瞬间不再看到批注原文一闪而过**（用户 2026-09-30 报；v1.4.23 未修复）：真因在宿主侧——
+  宿主的**提交回显气泡** `PendingSubmissionBubble`（`dsh-client-ui-chat`，元素带
+  `[data-submission-echo]`）从点击发送那一刻就把草稿原文显示出来，其注释写明
+  「visible from the submit click until the durable `user/message` or steering occurrence
+  renders」；而 `ChatNodeList` 把 pendingRows **直接追加在列表末尾、没有 ChatNodeSeat 包装**，
+  所以它拿不到 `data-chat-flow-kind` → 插件的 `allMessageRows()` 永远看不到它，从来没管过这个
+  元素。v1.4.23 的「期待新气泡」窗口打的是别处，所以照旧闪。
+
+  现在：
+  1. `hideDockEchoBlocks()` 用与普通气泡**同一条路径**处理 `[data-submission-echo]`：反解析条目
+     → 隐藏块 → 贴「批注 ×N」，所以从点击那一刻看到的就是标签。关键是让 `hideAnnotationBlock`
+     自己落到 `[class*="bubble"]` 上——把整个 `userRow` 当容器时，行里的时间戳（如「03:31」）
+     会让「纯批注」的严格判定失败（本版初版就是这么错的，用户实测仍闪）。
+  2. 纯批注的判定不再要求「整段文本恰好等于块本身」：定位 `headOnly…formatOnly` 区间并用
+     `cutRange` 跨文本节点切掉，保留容器里其它文本（时间戳 / 操作按钮 / 回显状态字）。
+  3. 窗口不再「第一次隐藏成功就收窗」（v1.4.23 的错），改为按时间过期 + O(1) 的
+     `freshBubbleNeedsHide()` 决定要不要全量扫描。
+
+### 验证方式
+本轮**不是**靠单元测试下的结论：先装了一个带帧级自检的 verify 构建（用 rAF 在绘制前采样
+「批注块是否进入即将绘制的帧」，把结果 toast 出来），由用户在真实应用里复现并确认——
+「现在修复了，看不到一闪而过的原文」。自检代码已从正式版删除，并有测试锁住它不再出现。
+
+### 测试
+- `test/bubble-hide.test.mjs`：新增回显行处理顺序（反解析 → 隐藏 → 贴标签）、隐藏失败不贴标签、
+  纯批注判定不许退回 `endsWith` 写法、以及「自检已拆干净」。
+- `test/message-block.test.mjs` harness 补 `cutRange` / `pruneEmpty` 桩。
+- 全套件 **45/45 全绿**。
+
 ## [1.4.23] - 2026-09-30
 
 ### 修复

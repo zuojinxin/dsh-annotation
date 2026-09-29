@@ -83,8 +83,24 @@
 //   React 的 commitTextUpdate 把文本写进**已有的**文本节点——那是 characterData 批次，
 //   原先只触发 500ms 限流的助手扫描，于是批注块先被画出来（用户看到原文一闪而过），
 //   要等 1s 兜底轮询才隐藏。现在发送时打开一个「期待新气泡」窗口（≤2s）：窗口内任何
-//   相关批次都同步跑隐藏手术，最新一条装饰成功即收起窗口，所以不会把 v1.4.3 省下的
-//   流式开销还回去。
+//   相关批次都同步跑隐藏手术。
+//   （本版还写了个错的收尾——「最新一条装饰成功即收起窗口」，见 v1.4.24 第 3 条。）
+//
+// v1.4.24 · 「原文一闪而过」的真正修复（用户实测确认无闪）：
+//   真因（读宿主源码确认）：宿主的**提交回显气泡** `PendingSubmissionBubble`
+//   （dsh-client-ui-chat）注释里写明「visible from the submit click until the durable
+//   user/message renders」——它从点击那一刻就把草稿原文显示出来；而 `ChatNodeList` 把
+//   pendingRows 直接追加在列表末尾、没有 ChatNodeSeat 包装，所以它拿不到
+//   data-chat-flow-kind → allMessageRows() 永远看不到它，插件从来没管过它。
+//   v1.4.23 的窗口打的是别处，所以照旧闪。现在：
+//     1. hideDockEchoBlocks() 处理 [data-submission-echo]：反解析条目 → 隐藏块 → 贴
+//        「批注 ×N」，与普通气泡同一套路径。注意必须让 hideAnnotationBlock 自己落到
+//        [class*="bubble"] 上——把整个 userRow 当容器时，行里的时间戳会让判定失败
+//        （本版初版就是这么错的，用户实测仍闪）；
+//     2. 纯批注的判定不再要求「整段文本恰好等于块本身」：定位 headOnly…formatOnly 区间并用
+//        cutRange 切掉它，保留容器里其它文本（时间戳 / 操作按钮 / 回显状态字）；
+//     3. 窗口（v1.4.23 引入）保留，但**不再「第一次隐藏成功就收窗」**——那正是 v1.4.23 没
+//        生效的原因；现在按时间过期，靠 O(1) 的 freshBubbleNeedsHide() 决定要不要全量扫描。
 //
 // 消息格式（zh）：我批注了以下 N 处内容…\n\n1. 原文\n   批注：…\n\n
 //           请用「Annotation 1：…」…\n\n提问：
@@ -1469,18 +1485,40 @@ window.__ModuleLoader__.load({
         }
         return false
       }
-      // 「刚发出、正等着新气泡出现」的窗口：这期间任何相关 mutation 批次都要**同步**跑一次
-      // decorateAll，不能只认 childList 批次。原因：v1.4.3 的优化假设「行插入批次本身就
-      // 携带完整批注块」，但用户消息气泡可能先插入空行、再由 React 的 commitTextUpdate 把
-      // 文本写进**已有的**文本节点——那是 characterData 批次，原先只触发 500ms 限流的助手
-      // 扫描，于是批注块先被画出来（用户看到「原文一闪而过」），要等 1s 轮询才隐藏。
-      // 窗口很短：正常情况下第一个批次就隐藏成功并立刻收起，不会把 v1.4.3 省下的流式开销
-      // 还回去。
+      // 「刚发出、正等着新气泡出现」的窗口。为什么需要它：
+      // v1.4.3 的优化假设「行插入批次本身就携带完整批注块」，所以只在含 childList 的批次里
+      // 同步跑 decorateAll，其余批次只触发 500ms 限流的助手扫描。这个前提对**刚发出的用户
+      // 消息**不成立——它的文本可能到后续批次才落进 DOM（React 的 commitTextUpdate 直接写
+      // 已有文本节点 → characterData 批次），也可能在隐藏之后被整行重渲染覆盖回来。两种
+      // 情况都会让批注块先被画出来（用户看到「原文一闪而过」），要等 500ms/1s 才隐藏。
+      //
+      // v1.4.23 在这里犯过一个错：窗口「第一次隐藏成功就收起」。结果隐藏完的下一帧被 React
+      // 重渲染覆盖回去时窗口已经关了，闪烁照旧。现在窗口按时间过期，靠
+      // freshBubbleNeedsHide() 这个 O(1) 判据决定要不要跑全量扫描——流式文本里没有批注块，
+      // 所以窗口开着也不会把 v1.4.3 省下的开销还回去。
       var freshBubbleUntil = 0
       var FRESH_BUBBLE_WINDOW = 2000
       function markFreshBubble() { freshBubbleUntil = Date.now() + FRESH_BUBBLE_WINDOW }
       function awaitingFreshBubble() { return Date.now() < freshBubbleUntil }
       function settleFreshBubble() { freshBubbleUntil = 0 }
+
+      /** 窗口内的廉价补刀判据：最新一行气泡、或队列 dock 的提交回显行里，又出现批注块了？
+       *  只看最新一行（+ 通常 0~1 个回显行），所以可以每个批次都问一次。 */
+      function freshBubbleNeedsHide() {
+        var rows = allMessageRows()
+        if (rows.length > 0) {
+          var el = rows[rows.length - 1]
+          if (el.querySelector('[data-annotation-bubble-tag]') === null) {
+            var b = el.querySelector('[class*="bubble"]')
+            if (b !== null && hasAnnotationBlock(b.textContent || '')) return true
+          }
+        }
+        var echoes = document.querySelectorAll('[data-submission-echo]')
+        for (var i = 0; i < echoes.length; i++) {
+          if (hasAnnotationBlock(echoes[i].textContent || '')) return true
+        }
+        return false
+      }
 
       var observer = new MutationObserver(function (mutations) {
         if (!mutationRelevant(mutations)) return
@@ -1499,7 +1537,7 @@ window.__ModuleLoader__.load({
         for (var i = 0; i < mutations.length; i++) {
           if (mutations[i].type === 'childList') { hasRowInsert = true; break }
         }
-        if (hasRowInsert || awaitingFreshBubble()) {
+        if (hasRowInsert || (awaitingFreshBubble() && freshBubbleNeedsHide())) {
           decorateAll()
           return
         }
@@ -2507,9 +2545,36 @@ window.__ModuleLoader__.load({
        *  找到最后一个「\n提问：」（老格式回退「\n问题：」），
        *  保留其后的用户问题，整块批注文本从 DOM 移除。
        *  返回是否成功（内容未渲染完时返回 false，轮询稍后重试）。 */
-      function hideAnnotationBlock(row) {
+      /** 把「拼接后的文本坐标区间 [start, end)」从对应的文本节点里抹掉（跨节点），
+       *  保留区间两端的内容——容器里往往还夹着别的东西（时间戳、操作按钮、回显状态字）。 */
+      function cutRange(nodes, start, end) {
+        var pos = 0
+        for (var i = 0; i < nodes.length; i++) {
+          var val = nodes[i].nodeValue || ''
+          var nodeStart = pos
+          var nodeEnd = pos + val.length
+          pos = nodeEnd
+          if (nodeEnd <= start || nodeStart >= end) continue
+          var keepHead = nodeStart < start ? val.slice(0, start - nodeStart) : ''
+          var keepTail = nodeEnd > end ? val.slice(end - nodeStart) : ''
+          nodes[i].nodeValue = keepHead + keepTail
+        }
+      }
+
+      /** 清掉容器里被手术掏空的元素（div/span/p）。 */
+      function pruneEmpty(container) {
+        var empties = container.querySelectorAll('div,span,p')
+        for (var e = 0; e < empties.length; e++) {
+          var em = empties[e]
+          if (em.parentNode !== null && (em.textContent || '').trim() === '') em.remove()
+        }
+      }
+
+      function hideAnnotationBlock(row, container) {
         try {
-          var bubble = row.querySelector('[class*="bubble"]')
+          // container 显式给出时直接用它；否则用行内的气泡元素。**必须落在气泡上而不是整行**：
+          // 行里还含时间戳等文本，会让「纯批注」的判定失败（v1.4.24 就栽在这里）。
+          var bubble = container !== undefined ? container : row.querySelector('[class*="bubble"]')
           if (bubble === null) return false
           var nodes = []
           var full = ''
@@ -2519,13 +2584,24 @@ window.__ModuleLoader__.load({
             nodes.push(n)
             full += n.nodeValue || ''
           }
-          // 纯批注用完整首尾文案识别，避免原文中的「提问：」被误当成正文分隔符。
-          var annotationOnly = ['zh', 'en'].some(function (lang) {
-            return full.indexOf(dictVal(lang, 'block.headOnly')) === 0
-              && full.trimEnd().endsWith(dictVal(lang, 'block.formatOnly'))
-          })
-          if (annotationOnly) {
-            nodes.forEach(function (node) { node.nodeValue = '' })
+          // 纯批注：定位 headOnly…formatOnly 这一整段并切掉，**不要求整段文本恰好等于块本身**
+          // （容器里可能夹着别的东西）。首尾文案同时命中即可——这样原文里出现「提问：」也不会
+          // 被误当成正文分隔符。
+          var langs = ['zh', 'en']
+          var headIdx = -1
+          var tailEnd = -1
+          for (var li = 0; li < langs.length; li++) {
+            var hStr = dictVal(langs[li], 'block.headOnly')
+            var fStr = dictVal(langs[li], 'block.formatOnly')
+            var hi = full.indexOf(hStr)
+            if (hi === -1) continue
+            var fi = full.indexOf(fStr, hi + hStr.length)
+            if (fi === -1) continue
+            if (headIdx === -1 || hi < headIdx) { headIdx = hi; tailEnd = fi + fStr.length }
+          }
+          if (headIdx !== -1) {
+            cutRange(nodes, headIdx, tailEnd)
+            pruneEmpty(bubble)
             return true
           }
           // 标记定位：当前语言优先（zh「提问：」/ en「Ask:」，均先带「\n」再裸匹配），
@@ -2556,15 +2632,32 @@ window.__ModuleLoader__.load({
             if (nodes[m2].parentNode !== null) nodes[m2].parentNode.removeChild(nodes[m2])
           }
           // 清理空元素。
-          var empties = bubble.querySelectorAll('div,span,p')
-          for (var e = 0; e < empties.length; e++) {
-            var em = empties[e]
-            if (em.parentNode !== null && (em.textContent || '').trim() === '') em.remove()
-          }
+          pruneEmpty(bubble)
           return true
         } catch (err) {
           console.warn('[annotation] 气泡隐藏手术失败：', err)
           return false
+        }
+      }
+
+      /** 提交回显气泡（`[data-submission-echo]`）也显示刚提交的草稿原文——它**不是消息行**，
+       *  decorateAll 只扫 allMessageRows()，永远看不到它。宿主源码写明它
+       *  「visible from the submit click until the durable user/message renders」
+       *  （dsh-client-ui-chat: PendingSubmissionBubble），而 ChatNodeList 把 pendingRows
+       *  直接追加在列表末尾、没有 ChatNodeSeat 包装，所以它拿不到 data-chat-flow-kind。
+       *  处理方式与普通气泡一致（反解析条目 → 隐藏块 → 贴「批注 ×N」），这样用户从点击那一刻
+       *  看到的就是标签而不是原文。 */
+      function hideDockEchoBlocks() {
+        var echoes = document.querySelectorAll('[data-submission-echo]')
+        for (var i = 0; i < echoes.length; i++) {
+          var row = echoes[i]
+          if (row.querySelector('[data-annotation-bubble-tag]') !== null) continue
+          if (!hasAnnotationBlock(row.textContent || '')) continue
+          // 先反解析（必须在隐藏之前），再动 DOM。注意传 row 而不是 row 本身当容器：
+          // hideAnnotationBlock 会自己落到 [class*="bubble"] 上。
+          var items = parseItemsFromBubble(row)
+          if (!hideAnnotationBlock(row)) continue
+          if (items.length > 0) attachBubbleTag(row, items)
         }
       }
 
@@ -2835,6 +2928,7 @@ window.__ModuleLoader__.load({
           // 每秒轮询 + 每个 mutation 批次都会走到这里：即使残留层是在本实例
           // 启动之后才被别的实例塞进来的，也会在一个周期内收敛回单份。
           sweepStrayLayers()
+          hideDockEchoBlocks()
           var rows = allMessageRows()
           for (var i = rows.length - 1; i >= 0; i--) {
             var el = rows[i]
@@ -2850,8 +2944,6 @@ window.__ModuleLoader__.load({
             if (!hideAnnotationBlock(el)) continue // 内容未渲染完 → 留给下轮（发送暂存数据不弹出）
             if (fromSend) pendingDeco.shift()
             attachBubbleTag(el, items)
-            // 最新一条已装饰完成：收起「期待新气泡」窗口，别让后续流式批次继续全量扫描。
-            if (i === rows.length - 1) settleFreshBubble()
             // 这里绝不清空待发送批注：DOM 层面无法区分「刚发送的消息」与「会话
             // 切换/刷新后重新渲染的历史消息」，历史消息重装饰曾被误判为已发送而
             // 清空刚恢复的待发送批注（issue #28 复测）。发送清空的唯一权威是
