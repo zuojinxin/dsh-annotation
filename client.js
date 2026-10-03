@@ -102,8 +102,69 @@
 //     3. 窗口（v1.4.23 引入）保留，但**不再「第一次隐藏成功就收窗」**——那正是 v1.4.23 没
 //        生效的原因；现在按时间过期，靠 O(1) 的 freshBubbleNeedsHide() 决定要不要全量扫描。
 //
+// v1.4.25 · 「点编号角标改批注时，编辑卡片跑到屏幕另一头」（用户 2026-10-04）：
+//   旧实现只把**原文**的位置交给卡片（`locateQuote(q.text)` → 贴原文下方居中），角标点
+//   在哪儿完全不参与。同一段文字在文档里出现多次时（本仓库 README 里的 REFUSAL
+//   HARDENING 段落就出现两次），locateQuote 可能命中另一处 → 卡片出现在远处，用户点完
+//   还得把鼠标移过去。
+//   现在角标点击把「**它对应的那段原文的矩形**」+「被点到的那颗角标」一起交给
+//   openEditorFor（绝不再 locateQuote——那正是命中另一处的来源）：
+//     1. 落位基准 = 原文矩形，定位规则 = placeEditorNear()，而它就是对
+//        placeForSelection 的一层封装 —— 与**首次划选弹出的工具条**用的是同一条规则
+//        （居中于基准、下方 8px、下方放不下才翻上方），所以「首次框选」与「二次编辑」
+//        的卡片出现在同一相对位置（用户明确要求两次一致）；
+//     2. 首次划选进编辑时卡片**原地接替工具条**：enterSync 在首次渲染里同步写一次位置，
+//        否则卡片先以 (0,0) 绘一帧再被 rAF 挪过去，看起来是「滑过去」而不是原地出现；
+//     3. 卡片打开期间锚定该角标元素（ui.editorAnchorNode + editorAnchorRel 记住「原文
+//        相对角标」的偏移）：滚动 / 视口变化时按角标的新位置反推原文矩形再落位，卡片
+//        始终待在原文旁边；角标滚出视口则保持原位，绝不甩到屏幕角落；
+//     4. 标记层整层重建会让旧角标脱离文档，此时按 data-ann-chip-for=<批注 id> 重新认领
+//        新角标；用户手动拖动卡片则解除锚定（自己摆的位置优先）。
+//   编辑按钮路径不传锚点，仍走「定位原文 → 贴原文下方」。
+//
+// v1.4.25 · 编辑卡片按钮语义（用户 2026-10-04 第二轮反馈）：
+//   - 二次编辑时头部右上角由「X（取消）」改为**垃圾桶（删除此批注）**——原先 X 与底部
+//     「取消」功能完全一样，用户想直接删掉这条批注只能去输入框旁的批注胶囊里删。
+//     现在走同一条 removeQuote 路径并 toast 确认；新增批注（此时还没有可删的批注）
+//     仍显示关闭按钮；
+//   - 底部主按钮文案由「保存批注」缩短为「保存」（en: Save annotation → Save）。
+//
+// v1.4.26 · 「批注 / 截图+提示词 被分成两轮发出」（用户 2026-10-04 报，与豆包对比）：
+//   用户预期与所有参考实现一致：**批注 = 提示词的一部分**，必须与截图、正文同处一条
+//   消息（豆包「追问：在新的消息中引用所选内容」、ChatGPT/Claude 的引用回复都是这个
+//   语义——引用是消息里的一个 content part，不是另一次发送）。
+//
+//   根因（从用户本机会话日志钉死，不是推测）：日志里那次是**两条不同 rpcId 的用户消息**、
+//   间隔 193ms，批注那条是 `headOnly` 变体（无「提问：」标记）。而 `headOnly` 只在
+//   `buildBlock(hasQuestion=false)` 时生成 → **插件拼稿那一刻把用户正文读成了空串**。
+//   于是批注单独走一条、宿主又把自己那份「正文 + attachmentIds」提交成另一条。
+//   两处缺陷：
+//     1. `attachAndSend` 只读 `shell.state.getSnapshot().draft`；输入区的文字还没同步进
+//        服务态时（附件上传 / React 提交批次延迟）读到空串。现在改为
+//        `resolveDraftText(shell)`：**服务态为空就回退读输入区 DOM**，绝不把正文读丢。
+//     2. 发送按钮路径原先是「有附件就不接管」（v1.4.22 的守卫）→ 批注根本不参与这次
+//        提交，截图与正文自己走一条。现在按「有没有用户内容」分流：
+//        - **有用户内容**（草稿非空 或 有附件）→ 只把批注块 prepend 进草稿，然后
+//          **放行事件、交给宿主提交**。宿主的一次提交会把 draft 与 attachmentIds 装进
+//          同一个 payload（`sinkSerialized` → `sendSession(text, attachmentIds, …)`），
+//          于是「批注 + 截图 + 提示词」就是同一条消息。这条路径**绝不自己 submit**。
+//        - **没有用户内容**（空草稿、无附件）→ 宿主因 empty 会拒绝提交，仍由插件接管
+//          按钮自己 submit('queue') 发纯批注（v1.4.21 的行为不变）。
+//   另：`rollbackDraft` 记住拼稿前的原始草稿，宿主同步拒绝提交时还原，不让批注块留在
+//   输入框里；Enter 路径同样走 resolveDraftText，附件场景不再分叉。
+//
+// v1.4.27 · 回复顺序写成显式约束（用户 2026-10-04 要求）：
+//   用户要的是「批注在最前面」——收到的回复必须**先逐条回应批注，再回答提示词相关的问题**。
+//   消息结构本来就是批注在前（`block + '\n' + draft`），但格式指令原文只是
+//   「…逐条回应上面每一条批注，最后再回答我的问题。」，提问很长时模型容易先答提问。
+//   现在把指令改成显式的顺序约束（zh「回答顺序：先…逐条回应上面每一条批注（这部分放在
+//   最前面），然后再回答我的问题。」／en「Answer order: first respond to each annotation
+//   above … (that part goes first), then answer my question.」）。
+//   结构不变（头部 → 批注 → 顺序指令 → 「提问：」→ 用户正文），所以气泡隐藏手术与
+//   「Annotation N：」芯片解析都不受影响；`formatOnly`（纯批注，无提问）不加顺序指令。
+//
 // 消息格式（zh）：我批注了以下 N 处内容…\n\n1. 原文\n   批注：…\n\n
-//           请用「Annotation 1：…」…\n\n提问：
+//           回答顺序：先按「Annotation 1：…」逐条回应批注（放最前面）…\n\n提问：
 // （en 用 I annotated the following N passage(s)… + Note: … + Ask:；
 //   zh 分隔标记用「提问：」而非「问题：」——标题行「回答我的问题：」里也含
 //   它，气泡隐藏手术会误命中）
@@ -174,6 +235,9 @@ window.__ModuleLoader__.load({
         '  background: transparent; color: var(--dsw-alias-label-tertiary); cursor: pointer; }',
         '.dsh-ann-icon:hover { background: var(--dsw-alias-interactive-bg-hover);',
         '  color: var(--dsw-alias-label-secondary); }',
+        // 卡片头部垃圾桶（二次编辑）：hover 用错误色提示「这是删除，不是关闭」。
+        '.dsh-ann-icon-danger:hover { background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #ff7a7a) 14%, transparent);',
+        '  color: var(--dsw-alias-state-error-primary, #ff7a7a); }',
         '.dsh-ann-icon svg { width: 14px; height: 14px; }',
         '.dsh-ann-card { position: fixed; z-index: 1201; width: 400px;',
         '  max-width: calc(100vw - 16px); padding: 12px; border-radius: 12px;',
@@ -266,7 +330,8 @@ window.__ModuleLoader__.load({
           addTitle: '添加批注',
           editTitle: '编辑批注',
           placeholder: '写下批注…（可留空，保存后仅标记原文）',
-          save: '保存批注',
+          save: '保存',
+          delete: '删除此批注',
         },
         common: { cancel: '取消' },
         error: { noSelection: '没有选中的内容' },
@@ -283,11 +348,12 @@ window.__ModuleLoader__.load({
           attachFail: '批注拼稿失败，消息将不带批注发送：',
           skipCommand: '本条是斜杠命令，未拼入批注；批注已保留，将随下一条消息发送',
           sendBlocked: '批注未能发出（附件可能还在上传），请稍后重试：',
+          deleted: '已删除该批注',
         },
         block: {
           head: '我批注了以下 {n} 处内容（编号与原文对应），请针对它们回答我的问题：',
           notePrefix: '批注：',
-          format: '请用「Annotation 1：…」到「Annotation {n}：…」的格式，逐条回应上面每一条批注，最后再回答我的问题。',
+          format: '回答顺序：先按「Annotation 1：…」到「Annotation {n}：…」的格式逐条回应上面每一条批注（这部分放在最前面），然后再回答我的问题。',
           headOnly: '我批注了以下内容，请逐条回应：',
           formatOnly: '请按「Annotation N：…」的格式，逐条回应以上批注。',
           marker: '提问：',
@@ -304,7 +370,8 @@ window.__ModuleLoader__.load({
           addTitle: 'Add annotation',
           editTitle: 'Edit annotation',
           placeholder: 'Write a note… (optional; saving only marks the passage)',
-          save: 'Save annotation',
+          save: 'Save',
+          delete: 'Delete this annotation',
         },
         common: { cancel: 'Cancel' },
         error: { noSelection: 'No text selected' },
@@ -321,11 +388,12 @@ window.__ModuleLoader__.load({
           attachFail: 'Failed to attach annotations; the message will be sent without them: ',
           skipCommand: 'Slash command detected — annotations stay pending and will attach to your next message',
           sendBlocked: 'Annotation was not sent (an attachment may still be uploading); try again: ',
+          deleted: 'Annotation deleted',
         },
         block: {
           head: 'I annotated the following {n} passage(s) (the numbers match the quotes below); please respond to them when answering my question:',
           notePrefix: 'Note: ',
-          format: 'Please respond to each annotation in the format "Annotation 1: …" through "Annotation {n}: …", then answer my question.',
+          format: 'Answer order: first respond to each annotation above in the format "Annotation 1: …" through "Annotation {n}: …" (that part goes first), then answer my question.',
           headOnly: 'I annotated the following passages; please respond to each annotation:',
           formatOnly: 'Please respond to each annotation above in the format "Annotation N: …".',
           marker: 'Ask:',
@@ -932,6 +1000,26 @@ window.__ModuleLoader__.load({
       return { left: Math.round(left), top: Math.round(top) }
     }
 
+    /** 编辑卡片相对锚点落位（v1.4.25）。
+     *
+     *  与「首次划选弹出的编辑卡片」**共用同一条规则**——首次那一步卡片是原地接替
+     *  工具条，而工具条由 placeForSelection 定位，所以这里对锚点调用同一个函数：
+     *  水平居中于锚点、落在锚点下方 8px、下方确实放不下才翻到上方。于是「首次框选」
+     *  与「二次点角标编辑」的卡片出现在同一相对位置（用户要求两次一致）。
+     *
+     *  锚点是**被点击的那颗编号角标**的矩形，不是重新 locateQuote 出来的原文矩形：
+     *  同一段文字在文档里可能出现在多处（本仓库 README 里的 REFUSAL HARDENING 段落
+     *  就出现两次），原文定位可能命中另一处 → 卡片跑到屏幕另一头，用户点完还得把
+     *  鼠标移过去。锚定用户实际点到的那颗角标，位置就永远在鼠标旁边。 */
+    function placeEditorNear(rect, width, height) {
+      return placeForSelection(
+        rect,
+        { x: rect.left + rect.width / 2, y: rect.bottom },
+        height,
+        width,
+      )
+    }
+
     function svg(paths, viewBox) {
       var s = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
       s.setAttribute('viewBox', viewBox)
@@ -1169,6 +1257,11 @@ window.__ModuleLoader__.load({
         anchorPoint: null,   // 本次落位使用的指针视口坐标（null = 键盘 / 双击划选）
         anchorRect: null,    // 本次落位使用的选区矩形（宽度实测后重排用）
         barWidth: 0,         // 上次实测的工具条宽度
+        editorAnchorNode: null, // 编辑卡片的落位锚点元素（点角标进入时 = 那颗角标；
+                                // null = 原文锚定，卡片不跟随滚动）
+        editorAnchorId: null,   // 锚点所属批注 id：标记层重绘后据此把锚点接到新角标上
+        editorAnchorRel: null,  // { dx, dy }：原文矩形相对角标矩形的偏移（跟随滚动用）
+        enterSync: null,        // { rect, used }：首次划选进编辑时「原地接替工具条」的一次性定位
       }
 
       function readPendingQuotes(sessionId) {
@@ -1426,7 +1519,16 @@ window.__ModuleLoader__.load({
           anchorRaf = false
           if (ui.quotes.length > 0) renderMarkers()
           updateChip()
-          if (ui.mode === 'editing' && ui.el !== null) positionEditor(ui.el, ui.pos.left, ui.pos.top)
+          if (ui.mode === 'editing' && ui.el !== null) {
+            // 标记锚定模式（点角标进入）：卡片跟着标记走，用户滚动后它仍在标记旁边；
+            // 原文锚定模式（添加批注 / 编辑按钮进入）：沿用原来的「保持视口内」钳制。
+            if (ui.editorAnchorNode === null || !followEditorAnchor()) {
+              positionEditor(ui.el, ui.pos.left, ui.pos.top)
+            } else {
+              ui.el.style.left = ui.pos.left + 'px'
+              ui.el.style.top = ui.pos.top + 'px'
+            }
+          }
           if (ui.mode !== 'actions' || ui.quote === '') return
           var rect = null
           var sel = window.getSelection()
@@ -1635,6 +1737,35 @@ window.__ModuleLoader__.load({
         return (text || '').trim() === ''
       }
 
+      /** 拼稿时要带上的「用户正文」。
+       *
+       *  v1.4.26 修的就是这里：原先只读 `shell.state.getSnapshot().draft`，一旦服务态还没
+       *  把输入区的文字同步进去（附件上传 / React 提交批次延迟），读到的是空串 →
+       *  `buildBlock(false)` 生成 headOnly 变体（没有「提问：」标记）→ 用户的正文被整段
+       *  丢掉，而正文+附件由宿主自己提交成另一条消息（用户看到的「分成两轮」）。
+       *  现在 shell 草稿为空但输入区确实有文字时，回退读 DOM，绝不把正文读丢。 */
+      function resolveDraftText(shell) {
+        var text = ''
+        if (shell !== null) {
+          try { text = shell.state.getSnapshot().draft || '' } catch (_) { text = '' }
+        }
+        if (text.trim() !== '') return text
+        var dom = domDraftText()
+        return dom.trim() !== '' ? dom : text
+      }
+
+      // 拼稿前的原始正文：提交被宿主同步拒绝时用它把草稿还原，避免批注块留在输入框里。
+      var rollbackDraft = null
+
+      function restoreDraftAfterFailedSubmit() {
+        if (rollbackDraft === null) return
+        var prev = rollbackDraft
+        rollbackDraft = null
+        var shell = shellFor(scopeOfSession(currentSessionId()))
+        if (shell === null) return
+        try { shell.setDraft(prev) } catch (_) {}
+      }
+
       /** 是否是宿主那个「普通发送」按钮（运行中的停止 / 排队 / 插话按钮都不算）。 */
       function isPlainSendButton(button) {
         var label = button.getAttribute('aria-label')
@@ -1726,13 +1857,33 @@ window.__ModuleLoader__.load({
         if (draftIsEmpty() && isPlainSendButton(prev)) prev.disabled = true
       }
 
-      /** 按钮激活（鼠标 / 触控 / 辅助技术都会产生 click）：宿主自己会因为 empty 而
-       *  拒绝提交（onPrimary 里 `if (!empty && !disabled && !machineBusy && !uploadsPending)`），
-       *  所以这里在 capture 阶段接管，不把事件交给宿主的 onClick。 */
+      /** 按钮激活（鼠标 / 触控 / 辅助技术都会产生 click）。
+       *
+       *  两条互斥的路径（v1.4.26 起按「有没有用户内容」分流）：
+       *
+       *  A. **有用户内容**（草稿非空 或 有附件）→ 插件**只把批注块拼到草稿开头**，
+       *     然后放行事件、由宿主自己提交。宿主的一次提交会把 draft 与 attachmentIds
+       *     装进同一个 payload，于是「批注 + 截图 + 提示词」就是**同一条消息**——这正是
+       *     豆包/ChatGPT 引用回复的语义。绝不能在这里 stopPropagation 后自己
+       *     submit('queue')：那会把批注单独发成一条（用户报的「分成两轮」）。
+       *
+       *  B. **没有用户内容**（空草稿、无附件）→ 宿主因为 empty 会拒绝提交，所以由插件
+       *     接管按钮：摘 disabled、自己 submit('queue') 发出纯批注。 */
       function onSendButtonActivate(e) {
         if (ui.quotes.length === 0 || e.button !== 0) return
         var button = sendButtonOf(e.target)
-        if (button === null || button.getAttribute('data-dsh-ann-enabled') !== '1') return
+        if (button === null) return
+        var owned = button.getAttribute('data-dsh-ann-enabled') === '1'
+        if (!owned) {
+          // 路径 A：按钮是宿主自己可用/禁用的那个（有附件时 empty 不成立，按钮本来就
+          // 可用）。我们只在 capture 阶段把批注块补进草稿，然后把事件留给宿主。
+          if (!isPlainSendButton(button)) return
+          if (sendStillInFlight()) return
+          if (draftIsEmpty() && !hasAttachments()) return
+          if (!prependBlockForHostSubmit()) return
+          return
+        }
+        // 路径 B：纯批注（空草稿、无附件），我们自己提交。
         e.preventDefault()
         e.stopPropagation()
         if (!attachAndSend({ ctrlKey: false, metaKey: false })) return
@@ -1743,12 +1894,47 @@ window.__ModuleLoader__.load({
         if (shell === null) { submitAttached(); return }
         try {
           shell.submit('queue')
+          rollbackDraft = null
         } catch (err) {
           // 宿主同步抛错时如实告知，不假装成功。异步失败由宿主自己的错误通知呈现
           // （例如附件未上传完：sendSession / serializeDraftAttachments 抛错后经
           //   notify("error", …) 显示），这里只兜同步抛出的情况。
           console.warn('[annotation] 批注提交被宿主拒绝：', err)
+          restoreDraftAfterFailedSubmit()
           showToast(t('toast.sendBlocked') + (err && err.message ? err.message : err))
+        }
+      }
+
+      /** 路径 A 的实现：把批注块拼到草稿开头，供宿主紧接着的同一次提交带走。
+       *  返回 true = 草稿里已有批注块（本次刚拼入，或之前已拼入未发送）。 */
+      function prependBlockForHostSubmit() {
+        var shell = shellFor(scopeOfSession(currentSessionId()))
+        if (shell === null) {
+          // 服务不可用：退回 DOM 注入，宿主自己的提交照常带走批注。
+          var dom = domDraftText()
+          if (isCommandDraft(dom) || hasAnnotationBlock(dom)) return hasAnnotationBlock(dom)
+          var hasQ = dom.trim() !== ''
+          if (!domAttachBlock(buildBlock(hasQ), hasQ)) return false
+          annotationAttached = true
+          domAttached = true
+          markFreshBubble()
+          return true
+        }
+        try {
+          var draft = resolveDraftText(shell)
+          if (isCommandDraft(draft)) { showToast(t('toast.skipCommand')); return false }
+          if (hasAnnotationBlock(draft)) { annotationAttached = true; return true }
+          var hasQuestion = draft.trim() !== ''
+          if (rollbackDraft === null) rollbackDraft = draft
+          shell.setDraft(buildBlock(hasQuestion) + (hasQuestion ? '\n' + draft : ''))
+          annotationAttached = true
+          markFreshBubble()
+          console.log('[annotation] 批注块已拼入草稿，由宿主的同一次提交与正文/附件一起发出（'
+            + ui.quotes.length + ' 条，含正文=' + hasQuestion + '）')
+          return true
+        } catch (err) {
+          console.warn('[annotation] 拼稿失败，交给宿主原样提交：', err)
+          return false
         }
       }
       document.addEventListener('click', onSendButtonActivate, true)
@@ -1817,6 +2003,17 @@ window.__ModuleLoader__.load({
           card.className = 'dsh-ann-card'
           card.style.left = ui.pos.left + 'px'
           card.style.top = ui.pos.top + 'px'
+          // 首次划选进编辑时卡片原地接替工具条：把刚算好的位置**同步**写进去，
+          // 否则卡片会先以 (0,0) 绘一帧、紧接着的 rAF 重排把它「挪」过去——用户
+          // 看到的是一张滑过去的卡片，而不是原地出现（v1.4.25 用户反馈）。
+          // 只认第一次渲染：openEditorFor / 报错重渲染都不该把卡片拽回原处。
+          if (ui.enterSync !== null && !ui.enterSync.used) {
+            ui.enterSync.used = true
+            var entry = placeEditorNear(ui.enterSync.rect, 0, 40)
+            ui.pos = entry
+            card.style.left = entry.left + 'px'
+            card.style.top = entry.top + 'px'
+          }
           ui.el = card
           var head = document.createElement('div')
           head.className = 'dsh-ann-card-head'
@@ -1825,7 +2022,16 @@ window.__ModuleLoader__.load({
           title.className = 'dsh-ann-card-title'
           title.textContent = ui.editingId !== null ? t('edit.editTitle') : t('edit.addTitle')
           head.appendChild(title)
-          head.appendChild(iconButton('dsh-ann-icon', ICONS.close, t('common.cancel'), closeToolbar))
+          // 头部按钮按模式区分（v1.4.25，用户要求）：
+          //   二次编辑已有批注 → 垃圾桶（删除这条批注），语义与底部的「取消」明确区分；
+          //   新增批注         → 关闭（此时还没有可删的批注，只能取消这次输入）。
+          if (ui.editingId !== null) {
+            head.appendChild(iconButton('dsh-ann-icon dsh-ann-icon-danger', ICONS.trash, t('edit.delete'), function () {
+              deleteEditing()
+            }))
+          } else {
+            head.appendChild(iconButton('dsh-ann-icon', ICONS.close, t('common.cancel'), closeToolbar))
+          }
           card.appendChild(head)
           var quote = document.createElement('div')
           quote.className = 'dsh-ann-quote'
@@ -1868,7 +2074,14 @@ window.__ModuleLoader__.load({
           ta.focus()
           ta.setSelectionRange(ta.value.length, ta.value.length)
           requestAnimationFrame(function () {
-            if (card.isConnected) positionEditor(card, ui.pos.left, ui.pos.top)
+            if (!card.isConnected) return
+            // 卡片实测尺寸到手后再落一次位：锚定标记时按标记重排，否则只做视口钳制。
+            if (ui.editorAnchorNode !== null && followEditorAnchor()) {
+              card.style.left = ui.pos.left + 'px'
+              card.style.top = ui.pos.top + 'px'
+            } else {
+              positionEditor(card, ui.pos.left, ui.pos.top)
+            }
           })
         }
       }
@@ -1886,6 +2099,10 @@ window.__ModuleLoader__.load({
         var drag = null
         head.addEventListener('pointerdown', function (e) {
           if (e.button !== 0 || !e.isPrimary || e.target.closest('button')) return
+          // 用户手动拖动卡片 = 明确要自己摆位置：解除标记锚定，之后滚动不再把它拽回去。
+          ui.editorAnchorNode = null
+          ui.editorAnchorId = null
+          ui.editorAnchorRel = null
           var r = card.getBoundingClientRect()
           drag = { id: e.pointerId, x: e.clientX - r.left, y: e.clientY - r.top }
           head.setPointerCapture(e.pointerId)
@@ -1965,6 +2182,10 @@ window.__ModuleLoader__.load({
             var chip = document.createElement('div')
             chip.className = 'dsh-ann-num'
             chip.textContent = String(i + 1)
+            // 编辑卡片打开期间标记层会整层重建（markersSignature 变化），旧角标节点
+            // 随即脱离文档。用 id 属性把「当前正在编辑的那条」标出来，卡片就能在新
+            // 角标上重新认领锚点（见 followEditorAnchor）。
+            chip.setAttribute('data-ann-chip-for', q.id)
             var chipTop = anchor.top - 20
             if (chipTop < 4) chipTop = Math.min(anchor.top + 2, window.innerHeight - 22)
             if (chipTop < 4) chipTop = 4
@@ -1987,12 +2208,17 @@ window.__ModuleLoader__.load({
             placed.push({ left: chipLeft, top: chipTop })
             chip.style.left = chipLeft + 'px'
             chip.style.top = chipTop + 'px'
-            ;(function (q) {
+            ;(function (q, quoteRect, chipEl) {
               chip.addEventListener('click', function (ev) {
                 ev.stopPropagation()
-                openEditorFor(q)
+                // 交给编辑卡片两样东西：**原文当前矩形**（落位基准）与**这颗角标**
+                // （卡片打开期间跟着它走）。绝不重新 locateQuote——同一段文字在文档里
+                // 可能出现多次，重新定位会命中另一处，卡片就跑到屏幕另一头了。
+                var chipRect = null
+                try { chipRect = chipEl.getBoundingClientRect() } catch (_) {}
+                openEditorFor(q, quoteRect, chipEl, chipRect)
               })
-            })(q)
+            })(q, anchor, chip)
             overlay.appendChild(chip)
           }
         }
@@ -2061,11 +2287,25 @@ window.__ModuleLoader__.load({
         ui.error = null
         ui.editingId = null
         ui.pendingAnchor = captureAnchor(ui.quote)
+        // 首次划选 → 编辑：卡片要**原地接替工具条**。ui.pos 此刻由工具条同款算法
+        // （placeForSelection + 指针锚点）算出，这里记住该矩形，render 首次绘制时
+        // 会再同步算一次（只消费一次），避免卡片先出现在 (0,0) 再被 rAF 挪过去。
+        ui.enterSync = ui.anchorRect !== null && ui.anchorRect.width > 0
+          ? { rect: ui.anchorRect, used: false }
+          : null
         render()
       }
 
-      /** 点击角标数字 → 重新打开该批注的编辑面板（预填批注内容，可修改后保存）。 */
-      function openEditorFor(q) {
+      /** 打开编辑面板（新增后的二次编辑走这里；「编辑」铅笔按钮也走这里）。
+       *  @param quoteRect 原文当前的视口矩形 = **落位基准**。首次划选时编辑卡片就是
+       *  按选区矩形定位的，这里用同一个基准，两次编辑的位置才一致（用户要求）。
+       *  @param anchorNode 被点击的那颗角标（可缺省）：卡片打开期间跟随它重排。
+       *  @param chipRect 该角标的视口矩形（可缺省）：角标滚出视口时用它兜底。
+       *
+       *  绝不用 locateQuote 重新定位原文——同一段文字在文档里可能出现多次，重新定位
+       *  会命中另一处，卡片就跑到屏幕另一头了。只有「编辑」按钮路径（拿不到 quoteRect）
+       *  才退回 locateQuote。 */
+      function openEditorFor(q, quoteRect, anchorNode, chipRect) {
         ui.mode = 'editing'
         ui.quote = q.text
         ui.source = q
@@ -2073,20 +2313,67 @@ window.__ModuleLoader__.load({
         ui.error = null
         ui.editingId = q.id
         ui.pendingAnchor = null
-        var range = locateQuote(q.text, q)
-        var rect = range !== null ? range.getBoundingClientRect() : null
-        if (rect !== null && rect.width > 0) {
-          var cardW = 400, cardH = 280
-          var anchorX = rect.left + 10
-          var cl = anchorX - cardW / 2
-          cl = Math.max(8, Math.min(cl, window.innerWidth - cardW - 8))
-          var ct = rect.bottom + 8
-          if (ct + cardH > window.innerHeight - 8) ct = window.innerHeight - cardH - 8
-          ui.pos = { left: Math.round(cl), top: Math.max(8, Math.round(ct)) }
-        } else {
-          ui.pos = { left: 8, top: 8 }
+        ui.editorAnchorId = anchorNode !== undefined && anchorNode !== null ? q.id : null
+        ui.editorAnchorNode = ui.editorAnchorId !== null ? anchorNode : null
+        ui.editorAnchorRel = null
+        if (ui.editorAnchorNode !== null && chipRect !== undefined && chipRect !== null
+          && chipRect.width > 0 && quoteRect !== undefined && quoteRect !== null && quoteRect.width > 0) {
+          // 记住「原文矩形」与「角标矩形」的相对关系：滚动时按原文的新位置重算，
+          // 卡片就始终待在原文旁边（与首次编辑同一参照物），而角标只是识别用的锚。
+          ui.editorAnchorRel = {
+            dx: quoteRect.left - chipRect.left,
+            dy: quoteRect.top - chipRect.top,
+          }
         }
+        var rect = quoteRect !== undefined && quoteRect !== null && quoteRect.width > 0
+          ? quoteRect
+          : null
+        if (rect === null) {
+          var range = locateQuote(q.text, q)
+          var r = range !== null ? range.getBoundingClientRect() : null
+          if (r !== null && r.width > 0) rect = r
+        }
+        // 首帧与首次划选那条路径完全同源：width 传 0 = 走 placeForSelection 的估算宽度
+        // （96），挂载后 render 的 rAF 会用实测宽度重排。传实测的 400 会让「先按 400
+        // 居中 → 再按 404 居中」多跳一次，首帧位置与首次编辑不一致。
+        if (rect !== null) ui.pos = placeEditorNear(rect, 0, 40)
+        else ui.pos = { left: 8, top: 8 }
         render()
+      }
+
+      /** 卡片跟随锚点重排（滚动 / 视口尺寸变化）。
+       *
+       *  参照物是**原文**（与首次编辑一致）：由角标的当前位置 + 记下来的相对偏移反推
+       *  原文现在的矩形，再用同一条 placeEditorNear 规则落位。于是滚动时卡片始终待在
+       *  原文旁边，且用户点哪一颗角标就认哪一颗（同一段文字多处出现也不会跳）。
+       *  角标滚出视口 / 已随标记层重建消失时返回 false → 卡片保持原位，绝不甩到角落。 */
+      function followEditorAnchor() {
+        var node = ui.editorAnchorNode
+        if (node !== null && !node.isConnected) {
+          // 角标已随标记层重建消失：按批注 id 在标记层里认领新的那颗（不查 document，
+          // 保持函数在无 document 的单测环境里也不抛）。
+          node = ui.editorAnchorId !== null && overlay !== null
+            && typeof overlay.querySelector === 'function'
+            ? overlay.querySelector('[data-ann-chip-for="' + ui.editorAnchorId + '"]')
+            : null
+          ui.editorAnchorNode = node
+        }
+        if (node === null) return false
+        var chipRect = node.getBoundingClientRect()
+        if (chipRect.width === 0 || chipRect.height === 0) return false
+        if (chipRect.bottom < 0 || chipRect.top > window.innerHeight
+          || chipRect.right < 0 || chipRect.left > window.innerWidth) return false
+        var rel = ui.editorAnchorRel
+        var rect = rel === null ? chipRect : {
+          left: chipRect.left + rel.dx,
+          top: chipRect.top + rel.dy,
+          width: chipRect.width,
+          height: chipRect.height,
+        }
+        var p = placeEditorNear(rect, ui.el !== null ? ui.el.offsetWidth : 0, ui.el !== null ? ui.el.offsetHeight : 0)
+        if (Math.abs(p.left - ui.pos.left) + Math.abs(p.top - ui.pos.top) <= 2) return true
+        ui.pos = p
+        return true
       }
 
       /** 组装批注块；只有附带正文时才添加「提问：」分隔标记。 */
@@ -2126,8 +2413,10 @@ window.__ModuleLoader__.load({
         // ---- 服务路径（首选）----
         if (shell !== null) {
           try {
-            var st = shell.state.getSnapshot()
-            var draft = st.draft || ''
+            // v1.4.26：正文从「服务态 + 输入区」两处取（见 resolveDraftText）。只读服务态
+            // 时若它还没同步到输入区的文字，会读到空串 → 生成 headOnly 变体把正文丢掉，
+            // 正文随后被宿主自己提交成另一条消息（用户报的「分成两轮」）。
+            var draft = resolveDraftText(shell)
             if (!shouldAttachForEnter(e, draft)) return false
             if (isCommandDraft(draft)) {
               showToast(t('toast.skipCommand'))
@@ -2139,10 +2428,12 @@ window.__ModuleLoader__.load({
             }
             var hasQuestion = draft.trim() !== ''
             var block = buildBlock(hasQuestion)
+            if (rollbackDraft === null) rollbackDraft = draft
             shell.setDraft(block + (hasQuestion ? '\n' + draft : ''))
             annotationAttached = true
             markFreshBubble()
-            console.log('[annotation] 批注块已拼入草稿，回车将随消息发送（' + ui.quotes.length + ' 条）')
+            console.log('[annotation] 批注块已拼入草稿，将与正文/附件同一条消息发出（'
+              + ui.quotes.length + ' 条，含正文=' + hasQuestion + '）')
             return true
           } catch (err) {
             console.warn('[annotation] 服务路径拼稿失败，回退 DOM 注入：', err)
@@ -2244,6 +2535,16 @@ window.__ModuleLoader__.load({
         focusComposer()
       }
 
+      /** 编辑卡片右上角的垃圾桶（v1.4.25）：删除当前正在编辑的这条批注。
+       *  走的是与「批注胶囊面板里的删」同一条 removeQuote 路径，语义完全一致，
+       *  不会只关掉卡片把批注留在清单里。 */
+      function deleteEditing() {
+        var id = ui.editingId
+        if (id === null) { closeToolbar(); return }
+        removeQuote(id)
+        showToast(t('toast.deleted'))
+      }
+
       function removeQuote(id) {
         ui.quotes = ui.quotes.filter(function (q) { return q.id !== id })
         writeCurrentPendingQuotes()
@@ -2262,6 +2563,10 @@ window.__ModuleLoader__.load({
         ui.busy = false
         ui.lastKey = ''
         ui.editingId = null
+        ui.editorAnchorNode = null
+        ui.editorAnchorId = null
+        ui.editorAnchorRel = null
+        ui.enterSync = null
         ui.anchorRel = null
         ui.anchorPoint = null
         ui.anchorRect = null
@@ -2476,6 +2781,7 @@ window.__ModuleLoader__.load({
         ui.quotes = []
         annotationAttached = false
         domAttached = false
+        rollbackDraft = null
         writeCurrentPendingQuotes()
         tipLayer.textContent = ''
         updateChip()

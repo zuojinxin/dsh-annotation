@@ -34,6 +34,19 @@ function harness(lang, draft, sourcePath) {
     // markFreshBubble）。它是 attachAndSend 的自由变量，harness 必须给桩，否则会抛
     // ReferenceError 被 try/catch 吞掉 → attachAndSend 变成返回 false。
     function markFreshBubble() {}
+    // v1.4.26：attachAndSend 的正文改为经 resolveDraftText 从「服务态 + 输入区」两处取
+    // （只读服务态会在输入区文字还没同步进去时把正文读丢，生成 headOnly 变体——正是
+    // 「批注与正文分成两轮」的根因，见 client.js 的 resolveDraftText）。harness 按同样
+    // 语义给桩。rollbackDraft 也是新增的自由变量（提交被拒时还原草稿用）。
+    var rollbackDraft = null
+    function domDraftText() { return '' }
+    function resolveDraftText(sh) {
+      var text = ''
+      try { text = sh.state.getSnapshot().draft || '' } catch (_) { text = '' }
+      if (text.trim() !== '') return text
+      var dom = domDraftText()
+      return dom.trim() !== '' ? dom : text
+    }
     ${['buildBlock', 'shouldAttachForEnter', 'isCommandDraft', 'attachAndSend', 'cutRange', 'pruneEmpty', 'hideAnnotationBlock', 'parseItemsFromBubble'].map(fn).join('\n')}
     return { setLang, attachAndSend, hideAnnotationBlock, parseItemsFromBubble }
   `)(shell, document, { SHOW_TEXT: 4 }, sourcePath)
@@ -52,7 +65,8 @@ for (const lang of ['zh', 'en']) {
       assert.equal(h.api.attachAndSend({}), true)
       const sent = h.shell.state.getSnapshot().draft
       assert.doesNotMatch(sent, /(?:提问：|Ask:)\s*$/)
-      assert.doesNotMatch(sent, /最后再回答我的问题|then answer my question/)
+      // 纯批注（headOnly）不该带「回答顺序」指令——没有提问就没有顺序可言。
+      assert.doesNotMatch(sent, /回答顺序|Answer order/)
       assert.match(sent, /Annotation/)
       assert.equal(h.api.attachAndSend({}), true)
       assert.equal(h.shell.state.getSnapshot().draft, sent, '重复发送前不重复拼稿')
@@ -74,6 +88,31 @@ for (const lang of ['zh', 'en']) {
     h.render(lang === 'zh' ? '我批注了以下 1 处内容' : 'I annotated the following 1 passage')
     assert.equal(h.api.hideAnnotationBlock(h.row), false)
     assert.notEqual(h.bubble.textContent, '')
+  })
+}
+
+for (const lang of ['zh', 'en']) {
+  test(`${lang}: 有正文时块序固定为 头部→批注→回答顺序指令→提问标记→用户正文`, () => {
+    const h = harness(lang, 'ZZ正文标记ZZ')
+    h.api.attachAndSend({})
+    const sent = h.shell.state.getSnapshot().draft
+    const head = lang === 'zh' ? '我批注了以下 1 处内容' : 'I annotated the following 1 passage'
+    const item = '原文包含提问：这个词'
+    const order = lang === 'zh' ? '回答顺序：先' : 'Answer order: first'
+    const draft = 'ZZ正文标记ZZ'
+    // 标记用 lastIndexOf：原文里也可能出现「提问：」（harness 的 quote 就是故意的），
+    // 真正的分隔标记一定在最后。
+    const at = [sent.indexOf(head), sent.indexOf(item), sent.indexOf(order),
+      sent.lastIndexOf(lang === 'zh' ? '提问：' : 'Ask:'), sent.indexOf(draft)]
+    assert.ok(at.every(i => i !== -1), '每一段都必须出现：' + at.join(','))
+    // 严格递增 = 批注在前、提示词在后；模型先读到的就是批注。
+    for (let i = 1; i < at.length; i++) {
+      assert.ok(at[i] > at[i - 1], `段序错乱：${at.join(',')}`)
+    }
+    // 顺序指令必须显式声明「批注在先、回答我的问题在后」，否则模型可能先答提问。
+    assert.match(sent, lang === 'zh'
+      ? /先.{0,40}逐条回应上面每一条批注（这部分放在最前面），然后再回答我的问题/
+      : /first respond to each annotation above.{0,60}that part goes first.{0,30}then answer my question/)
   })
 }
 

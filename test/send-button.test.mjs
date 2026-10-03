@@ -142,10 +142,34 @@ test('接管必须走 capture 阶段，否则宿主的 onClick 先跑', () => {
   assert.ok(fn[0].includes('e.preventDefault()'), 'must preventDefault')
 })
 
-test('只有我们自己摘掉 disabled 的按钮才接管（不抢宿主原生可用按钮的点击）', () => {
+test('两条路径分流：有用户内容时只拼稿放行宿主提交，空草稿纯批注才由我们接管', () => {
   const fn = source.match(/function onSendButtonActivate\(e\) \{[\s\S]*?\n      \}/)
-  assert.ok(fn[0].includes("getAttribute('data-dsh-ann-enabled') !== '1'"),
-    'onSendButtonActivate must require our own marker attribute')
+  assert.ok(fn, 'client.js should define onSendButtonActivate')
+  const body = fn[0]
+  // 路径 A（有用户内容 / 有附件）：**必须**在 capture 阶段只拼稿、把事件留给宿主，
+  // 这样宿主的同一次提交才会把 draft 与 attachmentIds 装进同一个 payload
+  // （「批注 + 截图 + 提示词」同一条消息）。
+  assert.ok(body.includes('prependBlockForHostSubmit()'), 'path A must prepend the block for the host submit')
+  assert.ok(body.includes('draftIsEmpty() && !hasAttachments()'), 'path A must trigger whenever there is user content')
+  // 路径 A 绝不能自己提交，否则批注会单独成一条（用户报的「分成两轮」）。
+  const prependCall = body.indexOf('prependBlockForHostSubmit()')
+  const firstSubmit = body.indexOf("submit('queue')")
+  assert.ok(prependCall !== -1 && firstSubmit > prependCall,
+    'path A must return to the host before any plugin-side submit')
+  // 路径 B：只有我们自己摘掉 disabled 的按钮才接管（不抢宿主原生可用按钮的点击）。
+  assert.ok(body.includes("getAttribute('data-dsh-ann-enabled') === '1'"),
+    'path B must require our own marker attribute')
+  assert.ok(body.includes('e.preventDefault()') && body.includes('e.stopPropagation()'),
+    'path B must stop the host onClick')
+})
+
+test('prependBlockForHostSubmit：只把批注块拼进草稿，不做任何提交', () => {
+  const fn = source.match(/function prependBlockForHostSubmit\(\) \{[\s\S]*?\n      \}/)
+  assert.ok(fn, 'client.js should define prependBlockForHostSubmit')
+  assert.ok(!fn[0].includes('submit('), 'path A must never submit on its own')
+  assert.ok(fn[0].includes('setDraft('), 'path A must splice the block into the draft')
+  assert.ok(fn[0].includes('resolveDraftText('), 'path A must not lose the user text')
+  assert.ok(fn[0].includes('domAttachBlock('), 'path A must fall back to DOM injection')
 })
 
 test('点击路径：先拼稿、再上闸、再提交；宿主同步抛错时如实提示', () => {
@@ -187,6 +211,37 @@ test('宿主重渲染会被兜住：属性观察 + 1s 周期扫描', () => {
   assert.match(source, /sendBtnObserver\.observe\(document\.documentElement/)
   assert.match(source, /attributeFilter: \['disabled', 'aria-label'\]/)
   assert.match(source, /decoTimer = setInterval\(function \(\) \{[\s\S]*?syncSendButton\(\)[\s\S]*?\}, 1000\)/)
+})
+
+test('resolveDraftText：服务态为空时回退输入区，绝不把用户正文读丢（v1.4.26 根因）', () => {
+  const fn = source.match(/function resolveDraftText\(shell\) \{[\s\S]*?\n      \}/)
+  assert.ok(fn, 'client.js should define resolveDraftText')
+  const build = (svcDraft, domText) => Function('domDraftText', `return (${fn[0]})`)(
+    () => domText,
+  )({ state: { getSnapshot: () => ({ draft: svcDraft }) } })
+
+  // 正常：服务态有正文就用它
+  assert.equal(build('用户问题', ''), '用户问题')
+  // 根因场景：服务态还没同步到输入区的文字 → 必须回退 DOM，否则生成 headOnly 变体、
+  // 正文被整段丢掉，随后被宿主提交成另一条消息（「批注 / 截图+提示词分成两轮」）
+  assert.equal(build('', '用户问题'), '用户问题')
+  assert.equal(build('   ', '用户问题'), '用户问题')
+  // 两边都空 → 空（纯批注，走 headOnly 是正确的）
+  assert.equal(build('', ''), '')
+  assert.equal(build('  ', '  '), '  ')
+  // 服务态抛错时不炸，仍尝试 DOM
+  const throws = Function('domDraftText', `return (${fn[0]})`)(() => '用户问题')
+  assert.equal(throws({ state: { getSnapshot: () => { throw new Error('inactive') } } }), '用户问题')
+})
+
+test('拼稿后的草稿一定同时含批注块与用户正文（同一条消息）', () => {
+  const fn = source.match(/function attachAndSend\(e\) \{[\s\S]*?\n      \}/)
+  assert.ok(fn, 'client.js should define attachAndSend')
+  const body = fn[0]
+  assert.ok(body.includes('resolveDraftText(shell)'), 'must resolve the draft from both channels')
+  assert.ok(body.includes("hasQuestion ? '\\n' + draft : ''"),
+    'must append the user text after the block so both ride one message')
+  assert.ok(body.includes('rollbackDraft = draft'), 'must keep the pre-splice draft for rollback')
 })
 
 test('两种语言的拒绝提示文案都在', () => {
