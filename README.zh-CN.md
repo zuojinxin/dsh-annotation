@@ -1,5 +1,7 @@
 # dsh-annotation
 
+[![npm version](https://img.shields.io/npm/v/@changfenhuang/dsh-annotation?style=flat&label=npm)](https://www.npmjs.com/package/@changfenhuang/dsh-annotation) [![DSH](https://img.shields.io/badge/DSH-up%20to%200.1.6--alpha.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness) [![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE) [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
+
 验证宿主：DSH 0.1.6-alpha.1；最低支持线仍验证 DSH 0.1.2-rc.1。版本号指 DSH 内核，不是 Desktop 外壳。
 
 侧边栏文件批注（DSH 0.1.6-alpha.1）：在工作区文件预览中选中文本、Markdown 或代码正文，即可沿用同一套批注、保存和回车发送流程。编辑器和发给模型的引用包含文件路径；刷新并重新打开原文件后恢复标记，同文不同文件可分别批注。当前不包含 PDF、图片或 iframe 内 HTML。
@@ -62,7 +64,7 @@
 # npm 公开包安装（无需 npm 账号）
 dsh plugin --profile web add @changfenhuang/dsh-annotation
 # 也可以直接从 GitHub 公开源码安装
-dsh plugin --profile web add git+https://github.com/omdsh-dev/dsh-annotation.git
+dsh plugin --profile web add github:zuojinxin/dsh-annotation
 # 本地路径安装（开发调试）
 cd /path/to/dsh-annotation
 dsh plugin --profile web add .
@@ -79,7 +81,7 @@ npm install @changfenhuang/dsh-annotation
 
 ### 从旧 `@omdsh-dev` 包名迁移
 
-如果你在 v1.4.2 之前安装过插件，请先删除旧依赖，再安装改名后的包：
+如果你在包名从 `@omdsh-dev` 改为 `@changfenhuang` 之前安装过插件，请先删除旧依赖，再安装改名后的包：
 
 ```sh
 dsh plugin --profile web remove @omdsh-dev/dsh-annotation

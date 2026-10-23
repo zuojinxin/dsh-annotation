@@ -1,5 +1,7 @@
 # dsh-annotation
 
+[![npm version](https://img.shields.io/npm/v/@changfenhuang/dsh-annotation?style=flat&label=npm)](https://www.npmjs.com/package/@changfenhuang/dsh-annotation) [![DSH](https://img.shields.io/badge/DSH-up%20to%200.1.6--alpha.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness) [![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE) [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
+
 Verified hosts: DSH 0.1.6-alpha.1 and the 0.1.2-rc.1 minimum. These are core versions, not Desktop shell versions.
 
 Sidebar file annotations (DSH 0.1.6-alpha.1): select plain text, Markdown, or code in a workspace file preview and use the same annotate, save, and Enter-to-send flow. The editor and model-facing quote include the file path. After reloading and reopening the original file, its markers are restored; identical passages in different files remain separate. PDF, images, and HTML inside iframes are not covered.
@@ -62,7 +64,7 @@ Select assistant text ──▶ Toolbar "Annotate" ──▶ Write note / save e
 # Public npm package (works without an npm account)
 dsh plugin --profile web add @changfenhuang/dsh-annotation
 # Or install directly from the public GitHub source
-dsh plugin --profile web add git+https://github.com/omdsh-dev/dsh-annotation.git
+dsh plugin --profile web add github:zuojinxin/dsh-annotation
 # local path install (development / debugging)
 cd /path/to/dsh-annotation
 dsh plugin --profile web add .
@@ -79,7 +81,7 @@ npm install @changfenhuang/dsh-annotation
 
 ### Migrating from the old `@omdsh-dev` package name
 
-If you installed the plugin before v1.4.2, remove the old dependency before installing the renamed package:
+If you installed the plugin under the old `@omdsh-dev` name, remove that dependency before installing the renamed package:
 
 ```sh
 dsh plugin --profile web remove @omdsh-dev/dsh-annotation
