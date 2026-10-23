@@ -2181,7 +2181,15 @@ window.__ModuleLoader__.load({
             card.style.top = entry.top + 'px'
           }
           ui.el = card
-          var editor = createEditorInput(ui.noteDraft, saveAnnotation, function (v) { ui.noteDraft = v })
+          var editor = createEditorInput(
+            ui.noteDraft,
+            saveAnnotation,
+            function (v) { ui.noteDraft = v },
+            closeToolbar,
+            ui.editingId !== null
+              ? { icon: ICONS.trash, title: t('edit.delete'), danger: true, onClick: deleteEditing }
+              : { icon: ICONS.close, title: t('common.cancel'), onClick: closeToolbar },
+          )
           card.appendChild(editor.el)
           if (ui.error !== null) {
             var err = document.createElement('div')
@@ -2213,9 +2221,9 @@ window.__ModuleLoader__.load({
       }
 
       /** 共用输入框：圆角长条 + 右侧 ✓，固定宽度，输入超长自动换行/增高。 */
-      function createEditorInput(value, onSave, onChange, onCancel) {
+      function createEditorInput(value, onSave, onChange, onCancel, action) {
         var box = document.createElement('div')
-        box.style.cssText = 'position:relative;display:block;box-sizing:border-box;width:100%;padding:3px 38px 3px 10px;border:none;background:transparent;'
+        box.style.cssText = 'position:relative;display:block;box-sizing:border-box;width:100%;padding:3px 38px 3px ' + (action !== undefined && action !== null ? 34 : 10) + 'px;border:none;background:transparent;'
         var ta = document.createElement('textarea')
         ta.className = 'dsh-ann-input'
         ta.rows = 1
@@ -2239,8 +2247,22 @@ window.__ModuleLoader__.load({
           }
           if (e.key === 'Enter' && !e.shiftKey && !isImeKeyBlocked(e)) { e.preventDefault(); onSave() }
         })
+        // 左侧动作按钮（v1.4.29）：编辑已有批注 → 删除这条批注；新增批注 → 关闭本次输入。
+        // v1.4.28 把编辑界面改成共用输入条时漏掉了这两个按钮，只能在角标悬浮卡上删、
+        // 且新增批注没有取消入口（Escape 也没接 onCancel）。
+        if (action !== undefined && action !== null) {
+          var actBtn = iconButton(
+            'dsh-ann-icon' + (action.danger === true ? ' dsh-ann-icon-danger' : ''),
+            action.icon,
+            action.title,
+            action.onClick,
+          )
+          actBtn.style.cssText = 'position:absolute;left:3px;bottom:4px;width:24px;height:24px;padding:0;'
+          box.appendChild(actBtn)
+        }
         var ok = document.createElement('button')
         ok.type = 'button'
+        ok.setAttribute('data-ann-save', '')
         ok.title = t('edit.save')
         ok.style.cssText = 'position:absolute;right:4px;bottom:4px;width:26px;height:26px;border:none;border-radius:50%;background:var(--dsw-alias-text-accent,#4c9aff);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;'
         ok.appendChild(ICONS.check())
@@ -2643,6 +2665,17 @@ window.__ModuleLoader__.load({
           tipEditing = false
           tipLayer.textContent = ''
           setQuoteHighlight(q.id, false)
+        }, {
+          icon: ICONS.trash,
+          title: t('edit.delete'),
+          danger: true,
+          onClick: function () {
+            tipEditing = false
+            tipLayer.textContent = ''
+            setQuoteHighlight(q.id, false)
+            removeQuote(q.id)
+            showToast(t('toast.deleted'))
+          },
         })
         el.appendChild(editor.el)
         editor.grow()

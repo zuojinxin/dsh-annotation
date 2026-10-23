@@ -64,8 +64,10 @@ test('角标点击把「原文矩形 + 被点到的那颗角标」交给编辑�
   const start = source.indexOf('function buildMarkers()')
   const end = source.indexOf('// ---------- 动作 ----------', start)
   const body = source.slice(start, end)
-  assert.match(body, /openEditorFor\(q, quoteRect, chipEl, chipRect\)/)
-  assert.match(body, /chipRect = chipEl\.getBoundingClientRect\(\)/)
+  // v1.4.28 起点角标不再另开卡片，而是在悬浮卡原位切成输入框，
+  // 所以断言的是「原文矩形 + 角标」被交给悬浮卡编辑器，而不是 openEditorFor。
+  assert.match(body, /showMarkerTip\(q, chipEl, quoteRect\)/)
+  assert.match(body, /renderMarkerTipEditor\(tipEl, q, chipEl, quoteRect\)/)
   assert.match(body, /\}\)\(q, anchor, chip\)/, '角标锚定的是它对应的那段原文（anchor），不是角标自身')
   assert.match(body, /chip\.setAttribute\('data-ann-chip-for', q\.id\)/)
 })
@@ -123,14 +125,26 @@ test('关闭编辑器时清掉标记锚点与首次定位状态', () => {
 
 // ---------- v1.4.25 第二批（用户 2026-10-04 第二轮反馈） ----------
 
-test('二次编辑时卡片头部是垃圾桶（删除），不是 X（取消）', () => {
+test('输入条左端动作按钮：二次编辑是垃圾桶（删除），新增批注是关闭（取消）', () => {
   const start = source.indexOf('function render()')
   const end = source.indexOf('function positionEditor(', start)
   const body = source.slice(start, end)
-  assert.match(body, /ui\.editingId !== null\) \{[\s\S]{0,220}ICONS\.trash, t\('edit\.delete'\)/)
-  assert.match(body, /deleteEditing\(\)/)
-  assert.match(body, /ICONS\.close, t\('common\.cancel'\), closeToolbar/, '新增批注仍是关闭')
-  assert.match(body, /dsh-ann-icon-danger/)
+  // v1.4.28 把编辑卡片改成共用输入条，按钮从卡片头部挪到输入条左端，语义不变。
+  assert.match(body, /ui\.editingId !== null[\s\S]{0,120}ICONS\.trash[\s\S]{0,60}t\('edit\.delete'\)/, '二次编辑是删除')
+  assert.match(body, /onClick: deleteEditing/)
+  assert.match(body, /ICONS\.close[\s\S]{0,120}onClick: closeToolbar/, '新增批注仍是关闭')
+  assert.match(body, /danger: true/)
+  assert.match(body, /function \(v\) \{ ui\.noteDraft = v \},[\s\S]{0,80}closeToolbar,/, 'Escape 取消接上 closeToolbar')
+})
+
+test('悬浮卡编辑器里也能直接删除这条批注（走 removeQuote + toast）', () => {
+  const start = source.indexOf('function renderMarkerTipEditor(')
+  const end = source.indexOf('function positionMarkerTip(', start)
+  const body = source.slice(start, end)
+  assert.match(body, /icon: ICONS\.trash,/)
+  assert.match(body, /title: t\('edit\.delete'\)/)
+  assert.match(body, /removeQuote\(q\.id\)/)
+  assert.match(body, /showToast\(t\('toast\.deleted'\)\)/)
 })
 
 test('头部垃圾桶真的删除批注（走 removeQuote，不是只关卡片）', () => {
