@@ -238,26 +238,12 @@ test('悬停定位仍是「角标上方 8px、放不下才翻下方、夹在输�
   assert.match(body, /Math\.min\(top, maxTop\)/)
 })
 
-test('输入条左端动作按钮：二次编辑是垃圾桶（删除），新增批注是关闭（取消）', () => {
-  const start = source.indexOf('function render()')
-  const end = source.indexOf('function positionEditor(', start)
-  const body = source.slice(start, end)
-  // v1.4.28 把编辑卡片改成共用输入条，按钮从卡片头部挪到输入条左端，语义不变。
-  assert.match(body, /ui\.editingId !== null[\s\S]{0,120}ICONS\.trash[\s\S]{0,60}t\('edit\.delete'\)/, '二次编辑是删除')
-  assert.match(body, /onClick: deleteEditing/)
-  assert.match(body, /ICONS\.close[\s\S]{0,120}onClick: closeToolbar/, '新增批注仍是关闭')
-  assert.match(body, /danger: true/)
-  assert.match(body, /function \(v\) \{ ui\.noteDraft = v \},[\s\S]{0,80}closeToolbar,/, 'Escape 取消接上 closeToolbar')
-})
-
-test('悬浮卡编辑器里也能直接删除这条批注（走 removeQuote + toast）', () => {
-  const start = source.indexOf('function renderMarkerTipEditor(')
-  const end = source.indexOf('function positionMarkerTip(', start)
-  const body = source.slice(start, end)
-  assert.match(body, /icon: ICONS\.trash,/)
-  assert.match(body, /title: t\('edit\.delete'\)/)
-  assert.match(body, /removeQuote\(q\.id\)/)
-  assert.match(body, /showToast\(t\('toast\.deleted'\)\)/)
+test('删除入口在角标悬浮卡（垃圾桶），编辑卡片本身不再画头部按钮', () => {
+  const tip = source.slice(source.indexOf('function showMarkerTip('), source.indexOf('function renderMarkerTipEditor('))
+  assert.match(tip, /ICONS\.trash, t\('edit\.delete'\)/)
+  assert.match(tip, /removeQuote\(q\.id\)/)
+  const render = source.slice(source.indexOf('function render()'), source.indexOf('function positionEditor('))
+  assert.doesNotMatch(render, /ICONS\.trash/, '编辑卡片不再画头部垃圾桶')
 })
 
 test('头部垃圾桶真的删除批注（走 removeQuote，不是只关卡片）', () => {
