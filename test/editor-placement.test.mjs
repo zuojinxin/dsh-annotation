@@ -60,15 +60,14 @@ test('首次划选与二次编辑用同一条规则（卡片原地接替工具�
   assert.deepEqual(second, first)
 })
 
-test('角标点击把「原文矩形 + 被点到的那颗角标」交给编辑器，不重新定位原文', () => {
+test('角标点击在原地切成输入框：不新开卡片、不重新定位原文', () => {
   const start = source.indexOf('function buildMarkers()')
-  const end = source.indexOf('// ---------- 动作 ----------', start)
+  const end = source.indexOf('function positionMarkerTip(', start)
+  assert.ok(start > 0 && end > start, 'buildMarkers 与 positionMarkerTip 位置可定位')
   const body = source.slice(start, end)
-  // v1.4.28 起点角标不再另开卡片，而是在悬浮卡原位切成输入框，
-  // 所以断言的是「原文矩形 + 角标」被交给悬浮卡编辑器，而不是 openEditorFor。
-  assert.match(body, /showMarkerTip\(q, chipEl, quoteRect\)/)
-  assert.match(body, /renderMarkerTipEditor\(tipEl, q, chipEl, quoteRect\)/)
-  assert.match(body, /\}\)\(q, anchor, chip\)/, '角标锚定的是它对应的那段原文（anchor），不是角标自身')
+  assert.match(body, /chipEl\.addEventListener\('click'/)
+  assert.match(body, /renderMarkerTipEditor\(tipEl, q, chipEl, quoteRect\)/, '点角标与铅笔同一套：悬浮卡原位切编辑')
+  assert.doesNotMatch(body, /openEditorFor\(/, '角标点击不再走 openEditorFor 的原文定位')
   assert.match(body, /chip\.setAttribute\('data-ann-chip-for', q\.id\)/)
 })
 
@@ -97,7 +96,7 @@ test('滚动时卡片按「原文矩形」跟随（同一参照物，不会跳�
   const start = source.indexOf('function followEditorAnchor()')
   const end = source.indexOf('// ---------- 批注标记 ----------', start)
   const body = source.slice(start, end)
-  assert.match(body, /overlay\.querySelector\('\[data-ann-chip-for="/)
+  assert.match(body, /markerLayer\.querySelector\('\[data-ann-chip-for="/)
   assert.match(body, /var rel = ui\.editorAnchorRel/)
   assert.match(body, /left: chipRect\.left \+ rel\.dx/)
   assert.match(body, /top: chipRect\.top \+ rel\.dy/)
@@ -124,6 +123,120 @@ test('关闭编辑器时清掉标记锚点与首次定位状态', () => {
 })
 
 // ---------- v1.4.25 第二批（用户 2026-10-04 第二轮反馈） ----------
+
+// ---------- v1.4.28：所有编辑入口统一到「悬停角标」那套定位 ----------
+
+test('批注列表里的「编辑」走统一入口，不再「滚到原文 + 等 500ms + 原文下方弹卡」', () => {
+  const start = source.indexOf('function showChipTip()')
+  const end = source.indexOf('// ---------- 发送完成监听', start)
+  const body = source.slice(start, end)
+  assert.match(body, /openEditorFromList\(qq\)/, '铅笔按钮走统一入口')
+  assert.doesNotMatch(body, /scrollBy\(/, '不再上推 260px')
+  assert.doesNotMatch(body, /openEditorFor\(qq\)/, '不再从列表直接按原文定位弹卡')
+})
+
+test('openEditorFromList：角标可见直接锚定，不可见才滚动，落定后仍锚角标', () => {
+  const start = source.indexOf('function openEditorFromList(')
+  const end = source.indexOf('// ---------- 动作 ----------', start)
+  const body = source.slice(start, end)
+  assert.match(body, /if \(openEditorAtChip\(q\)\) return/, '角标可见 → 零滚动零延迟')
+  assert.match(body, /scrollIntoView\(\{ block: 'center', behavior: 'smooth' \}\)/)
+  assert.match(body, /whenScrollSettled\(range, function \(\) \{/)
+  assert.match(body, /if \(!openEditorAtChip\(q\)\) openEditorFor\(q\)/, '兜底才退回原文定位')
+  assert.doesNotMatch(body, /setTimeout/, '不靠固定延时等滚动')
+})
+
+test('openEditorAtChip 复用悬停那套：showMarkerTip + renderMarkerTipEditor', () => {
+  const start = source.indexOf('function openEditorAtChip(')
+  const end = source.indexOf('function whenScrollSettled(', start)
+  const body = source.slice(start, end)
+  assert.match(body, /chipForQuote\(q\.id\)/, '锚点是当前那颗角标')
+  assert.match(body, /showMarkerTip\(q, chipEl, null\)/)
+  assert.match(body, /renderMarkerTipEditor\(tipEl, q, chipEl, null\)/, '原地切成输入框，不另开卡片')
+  assert.match(body, /markerHover = \{ id: q\.id, grace: null \}/)
+})
+
+test('chipForQuote 必须在 markerLayer 里查角标：overlay 只装高亮，查它永远拿到 null', () => {
+  const start = source.indexOf('function chipForQuote(')
+  const end = source.indexOf('function openEditorAtChip(', start)
+  assert.ok(start > 0 && end > start, 'chipForQuote 与 openEditorAtChip 位置可定位')
+  const body = source.slice(start, end)
+  assert.match(body, /markerLayer\.querySelector/, '角标是 markerLayer 的子节点')
+  assert.doesNotMatch(body, /overlay\.querySelector/,
+    'overlay 里只有高亮块；从 overlay 查角标恒为 null，会让列表入口静默退回原文定位')
+})
+
+test('任何按 data-ann-chip-for 查角标的地方都用 markerLayer，不用 overlay', () => {
+  const lines = source.split('\n').filter(function (l) {
+    return l.indexOf('querySelector') !== -1 && l.indexOf('data-ann-chip-for') !== -1
+  })
+  assert.ok(lines.length >= 2, '至少两处按 id 认领角标')
+  lines.forEach(function (l) {
+    assert.doesNotMatch(l, /overlay\.querySelector/,
+      '角标挂在 markerLayer（overlay 的兄弟节点），查 overlay 恒为 null：' + l.trim())
+  })
+})
+
+test('「取消全部」走 chipLayer 的 pointerdown 委托，不依赖 click 命中 10px SVG 描边', () => {
+  const start = source.indexOf("chipLayer.setAttribute('data-annotation-chip'")
+  const end = source.indexOf('document.body.appendChild(chipLayer)', start)
+  assert.ok(start > 0 && end > start, 'chipLayer 初始化位置可定位')
+  const body = source.slice(start, end)
+  assert.match(body, /addEventListener\('pointerdown'/)
+  assert.match(body, /closest\('\[data-ann-clear-all\]'\)/)
+  assert.match(body, /clearAllQuotes\(\)/)
+})
+
+test('取消全部按钮带 data-ann-clear-all，且 SVG 不吞指针事件', () => {
+  const start = source.indexOf("var closeX = document.createElement('span')")
+  const end = source.indexOf('chipLayer.appendChild(closeX)', start)
+  assert.ok(start > 0 && end > start, 'closeX 位置可定位')
+  const body = source.slice(start, end)
+  assert.match(body, /setAttribute\('data-ann-clear-all'/)
+  assert.match(body, /pointer-events="none"/, 'SVG 描边只有 1.3px，必须穿透到 span 才点得中')
+  assert.doesNotMatch(body, /addEventListener\('click'/, '触发逻辑收敛到委托，避免双触发')
+})
+
+test('clearAllQuotes 一次做完：清清单、落盘、收标签、重绘', () => {
+  const start = source.indexOf('function clearAllQuotes()')
+  const end = source.indexOf('var chipLayer = document.createElement', start)
+  assert.ok(start > 0 && end > start, 'clearAllQuotes 位置可定位')
+  const body = source.slice(start, end)
+  assert.match(body, /ui\.quotes = \[\]/)
+  assert.match(body, /annotationAttached = false/)
+  assert.match(body, /try \{ writeCurrentPendingQuotes\(\) \} catch/)
+  assert.match(body, /tipLayer\.textContent = ''/)
+  assert.match(body, /updateChip\(\)/)
+  assert.match(body, /renderMarkers\(\)/)
+})
+
+test('悬浮层隐藏定时器在触发时必须复检 tipEditing（80ms 竞态会让编辑卡一闪就消失）', () => {
+  const start = source.indexOf('function scheduleHide()')
+  const end = source.indexOf('function cancelHide()', start)
+  assert.ok(start > 0 && end > start, 'scheduleHide 与 cancelHide 位置可定位')
+  const body = source.slice(start, end)
+  const cb = body.slice(body.indexOf('setTimeout(function () {'))
+  assert.ok(cb.length > 0, 'scheduleHide 里应有定时器')
+  assert.match(cb, /if \(tipEditing\) return/,
+    '回调里必须再查一次：排定时器时列表刚被抽走、80ms 后编辑卡才建好，只查一次会把它清掉')
+})
+
+test('openEditorAtChip 先撤掉待执行的隐藏定时器，再建编辑卡', () => {
+  const start = source.indexOf('function openEditorAtChip(')
+  const end = source.indexOf('function whenScrollSettled(', start)
+  const body = source.slice(start, end)
+  assert.match(body, /cancelHide\(\)/, '列表入口清空 tipLayer 会排上隐藏定时器，建卡前要撤掉')
+})
+
+test('悬停定位仍是「角标上方 8px、放不下才翻下方、夹在输入框上沿之上」', () => {
+  const start = source.indexOf('function positionMarkerTip(')
+  const end = source.indexOf('/** 批注 id → 当前标记层', start)
+  assert.ok(start > 0 && end > start, 'positionMarkerTip 与 chipForQuote 位置可定位')
+  const body = source.slice(start, end)
+  assert.match(body, /var top = cr\.top - h - 8/)
+  assert.match(body, /if \(top < 8\) top = cr\.bottom \+ 8/)
+  assert.match(body, /Math\.min\(top, maxTop\)/)
+})
 
 test('输入条左端动作按钮：二次编辑是垃圾桶（删除），新增批注是关闭（取消）', () => {
   const start = source.indexOf('function render()')

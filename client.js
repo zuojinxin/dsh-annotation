@@ -2699,6 +2699,77 @@ window.__ModuleLoader__.load({
         el.style.top = top + 'px'
       }
 
+      /** 批注 id → 当前标记层里的那颗编号角标。
+       *  角标挂在 markerLayer（与 overlay 是 body 下的兄弟节点，不是它的子节点），
+       *  查 overlay 会永远拿到 null —— 那样列表入口会一路退回 openEditorFor 的原文定位。
+       *  原文滚出视口时标记层根本不建角标（buildMarkers 的 anchor 判定），返回 null。 */
+      function chipForQuote(id) {
+        if (markerLayer === null || typeof markerLayer.querySelector !== 'function') return null
+        var el = markerLayer.querySelector('[data-ann-chip-for="' + id + '"]')
+        if (el === null || el === undefined) return null
+        // 角标被输入框遮住时 buildMarkers 会 display:none 它：没有尺寸就不能当锚点，
+        // 否则卡片会落到 (8,8) 角落。此时返回 null，让调用方先滚动再定位。
+        var r = el.getBoundingClientRect()
+        if (r.width === 0 || r.height === 0) return null
+        return el
+      }
+
+      /** 打开编辑卡片的**唯一**落位逻辑：与「点角标」「悬停后点铅笔」同一份代码。
+       *  先按悬停样式建卡，再原地切成输入框，位置恒为角标上方（positionMarkerTip）。
+       *  角标当前不存在时返回 false，由调用方先把原文滚进视野。 */
+      function openEditorAtChip(q) {
+        var chipEl = chipForQuote(q.id)
+        if (chipEl === null) return false
+        // 列表入口进来时，上一步 tipLayer.textContent = '' 可能已经排上了隐藏定时器
+        // （鼠标下方的元素被抽走 → tipLayer mouseleave）。这里先撤掉，再建编辑卡。
+        if (typeof cancelHide === 'function') cancelHide()
+        setQuoteHighlight(q.id, true)
+        showMarkerTip(q, chipEl, null)
+        markerHover = { id: q.id, grace: null }
+        var tipEl = tipLayer.firstElementChild
+        if (tipEl === null) return false
+        renderMarkerTipEditor(tipEl, q, chipEl, null)
+        return true
+      }
+
+      /** 等平滑滚动真正落定：轮询原文矩形，连续两帧不变（或超时）即认为停住。
+       *  固定延时会在长距离滚动时提前弹卡，卡片随后被滚走的角标甩在原地。 */
+      function whenScrollSettled(range, done) {
+        var last = ''
+        var stable = 0
+        var started = Date.now()
+        function step() {
+          var key = ''
+          try {
+            var r = range.getBoundingClientRect()
+            key = Math.round(r.top) + ':' + Math.round(r.left)
+          } catch (_) { key = '' }
+          if (key !== '' && key === last) stable++
+          else stable = 0
+          last = key
+          if (stable >= 2 || Date.now() - started > 900) { done(); return }
+          requestAnimationFrame(step)
+        }
+        requestAnimationFrame(step)
+      }
+
+      /** 输入框旁「N 条批注」列表里的「编辑」：与角标入口共用同一套定位。
+       *  角标可见 → 零滚动、零延迟，直接在角标上方弹卡；
+       *  角标不可见（原文被滚走，标记层没建角标）→ 先把原文滚进视野，落定后
+       *  仍走同一条锚定逻辑；只有拿不到角标时才退回 openEditorFor 的原文定位兜底。 */
+      function openEditorFromList(q) {
+        if (openEditorAtChip(q)) return
+        var range = locateQuote(q.text, q)
+        if (range === null) { openEditorFor(q); return }
+        var node = range.startContainer
+        while (node !== null && node.nodeType !== 1) node = node.parentNode
+        if (node !== null) node.scrollIntoView({ block: 'center', behavior: 'smooth' })
+        whenScrollSettled(range, function () {
+          renderMarkers()
+          if (!openEditorAtChip(q)) openEditorFor(q)
+        })
+      }
+
       // ---------- 动作 ----------
       function captureAnchor(text) {
         var anchor = {
@@ -2836,9 +2907,9 @@ window.__ModuleLoader__.load({
         if (node !== null && !node.isConnected) {
           // 角标已随标记层重建消失：按批注 id 在标记层里认领新的那颗（不查 document，
           // 保持函数在无 document 的单测环境里也不抛）。
-          node = ui.editorAnchorId !== null && overlay !== null
-            && typeof overlay.querySelector === 'function'
-            ? overlay.querySelector('[data-ann-chip-for="' + ui.editorAnchorId + '"]')
+          node = ui.editorAnchorId !== null && markerLayer !== null
+            && typeof markerLayer.querySelector === 'function'
+            ? markerLayer.querySelector('[data-ann-chip-for="' + ui.editorAnchorId + '"]')
             : null
           ui.editorAnchorNode = node
         }
@@ -3062,10 +3133,31 @@ window.__ModuleLoader__.load({
       }
 
       // ---------- 输入框旁的批注标签（N 条批注 · 悬浮看全部内容） ----------
+      /** 取消全部待发送批注：清清单、落盘、收标签、重绘标记层。 */
+      function clearAllQuotes() {
+        ui.quotes = []
+        annotationAttached = false
+        try { writeCurrentPendingQuotes() } catch (_) {}
+        tipLayer.textContent = ''
+        updateChip()
+        renderMarkers()
+      }
       var chipLayer = document.createElement('div')
       chipLayer.setAttribute('data-annotation-chip', '')
       chipLayer.className = 'dsh-ann-chip'
       chipLayer.style.cssText = 'position:fixed;z-index:1150;display:none;cursor:default;animation:dsh-ann-pop .12s var(--ds-ease-in-out, ease);'
+      // 用 pointerdown + 事件委托触发「取消全部」：
+      //  · 不依赖 click 的「mousedown/mouseup 必须落在同一节点」——标签内容会被
+      //    updateChip 整条重建，重建恰好发生在两次事件之间时 click 不会派发；
+      //  · 不依赖命中 10px SVG 的描边（描边仅 1.3px，点偏 1-2px 就落空）。
+      chipLayer.addEventListener('pointerdown', function (ev) {
+        var t = ev.target
+        if (t === null || typeof t.closest !== 'function') return
+        if (t.closest('[data-ann-clear-all]') === null) return
+        ev.preventDefault()
+        ev.stopPropagation()
+        clearAllQuotes()
+      })
       document.body.appendChild(chipLayer)
       var tipLayer = document.createElement('div')
       tipLayer.setAttribute('data-annotation-tip-layer', '')
@@ -3088,17 +3180,13 @@ window.__ModuleLoader__.load({
         chipLayer.appendChild(ic)
         chipLayer.appendChild(document.createTextNode(' ' + ui.quotes.length + ' 条批注'))
         var closeX = document.createElement('span')
-        closeX.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;margin-left:2px;cursor:pointer;opacity:.6;flex:none;border-radius:7px;'
-        closeX.innerHTML = '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M2 2l6 6M8 2L2 8"/></svg>'
-        closeX.addEventListener('click', function (ev) {
-          ev.stopPropagation()
-          ui.quotes = []
-          annotationAttached = false
-          writeCurrentPendingQuotes()
-          tipLayer.textContent = ''
-          updateChip()
-          renderMarkers()
-        })
+        closeX.setAttribute('data-ann-clear-all', '')
+        closeX.setAttribute('role', 'button')
+        closeX.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;margin-left:2px;cursor:pointer;opacity:.6;flex:none;border-radius:9px;pointer-events:auto;'
+        closeX.innerHTML = '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" pointer-events="none"><path d="M2 2l6 6M8 2L2 8"/></svg>'
+        closeX.addEventListener('mouseenter', function () { closeX.style.opacity = '1' })
+        closeX.addEventListener('mouseleave', function () { closeX.style.opacity = '.6' })
+        // 触发逻辑在 chipLayer 的 pointerdown 委托里（见上方），这里只负责命中标记。
         chipLayer.appendChild(closeX)
         var card = document.querySelector('[data-composer-card]')
         if (card !== observedComposer) {
@@ -3128,6 +3216,11 @@ window.__ModuleLoader__.load({
         if (hoverGrace !== null) clearTimeout(hoverGrace)
         hoverGrace = setTimeout(function () {
           hoverGrace = null
+          // 排定时器时还没进编辑态、80ms 后已经进了 —— 典型竞态：
+          // 点铅笔时先把列表 tipLayer.textContent = '' 抽掉，鼠标下方的元素消失会让
+          // tipLayer 收到 mouseleave，于是这里被排上；等新编辑卡建好（tipEditing=true）
+          // 定时器才触发，卡片就被清掉了（表现为「闪一下就消失、高亮还在」）。
+          if (tipEditing) return
           tipLayer.textContent = ''
         }, HOVER_HIDE_DELAY)
       }
@@ -3226,23 +3319,9 @@ window.__ModuleLoader__.load({
             editBtn.addEventListener('click', function (ev) {
               ev.stopPropagation()
               tipLayer.textContent = ''
-              // 先平滑滚动到原文位置，等滚完再弹窗编辑
-              try {
-                var rng = locateQuote(qq.text, qq)
-                if (rng !== null) {
-                  var node = rng.startContainer
-                  while (node !== null && node.nodeType !== 1) node = node.parentNode
-                  if (node !== null) {
-                    node.scrollIntoView({ block: 'center', behavior: 'smooth' })
-                    // center 后再往上推一点，给下方弹窗腾空间
-                    setTimeout(function () {
-                      try { window.scrollBy({ top: -260, behavior: 'smooth' }) } catch (_) {}
-                    }, 50)
-                  }
-                }
-              } catch (_) {}
-              // 等滚动动画完成后再打开编辑器（此时 rect 位置才准确）
-              setTimeout(function () { openEditorFor(qq) }, 500)
+              // 与角标入口同源：角标可见就在角标上方弹卡（不滚动、不延时），
+              // 不可见才先把原文滚进视野——不再用「滚到原文 + 等 500ms + 原文下方居中」那套。
+              openEditorFromList(qq)
             })
           })(q)
           actions.appendChild(editBtn)

@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.4.30] - 2026-10-23
+
+### 优化
+- **所有编辑入口统一到「悬停角标」这一套定位**：点输入框旁「N 条批注」→ 修改，现在与悬停
+  数字角标走同一条路径（`chipForQuote` → `openEditorAtChip`），编辑卡贴着那颗角标出现，
+  不再各自算位置。角标在视口内直接锚定；不在视口内才先滚到原文，落定后再锚回角标。
+
+### 修复
+- **列表入口点「修改」没反应**：`chipForQuote` 在 `overlay` 里查角标，而角标挂在
+  `markerLayer`，永远拿到 `null`，于是静默退回原文定位。两处查角标的地方统一走 `markerLayer`。
+- **编辑卡一闪就消失**：悬停列表被抽走时会排一个 80ms 的隐藏定时器，编辑卡建好后正好被它清掉。
+  `scheduleHide` 的回调里复检 `tipEditing`，`openEditorAtChip` 建卡前先 `cancelHide()`。
+- **「N 条批注」后面的 X 点了没反应**：原来监听 `click`，而标签内容会被 `updateChip` 整条重建，
+  按下与抬起落在不同节点时 `click` 根本不派发；可命中的又只有 10px SVG 里 1.3px 的描边。
+  改为 `chipLayer` 上的 `pointerdown` 事件委托（`data-ann-clear-all` 标记），SVG 设
+  `pointer-events="none"` 让整个 18×18 盒子接住点击，触发逻辑收敛成 `clearAllQuotes()`。
+
+### 变更
+- `test/editor-placement.test.mjs` 补 8 条用例锁住上述行为（统一入口、markerLayer 查询、
+  隐藏定时器复检、取消全部的委托与命中）。
+
 ## [1.4.29] - 2026-10-23
 
 ### 修复
