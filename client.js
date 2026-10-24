@@ -573,6 +573,36 @@ window.__ModuleLoader__.load({
       }).filter(function (r) { return r.width > 0 && r.height > 0 })
     }
 
+    /** 会话正文的可视裁剪框（视口坐标 top/bottom）。正文在滚动容器（宿主
+     *  `[data-conversation-scroll]`，overflow-y:auto）里，滚出去的内容由容器裁掉；
+     *  而角标层/高亮层是 position:fixed 铺满整窗的，不跟着裁就会画到顶部页签栏、
+     *  底部状态栏上（用户实测：向上滚动时编号角标浮到会话视图上方）。
+     *  找不到滚动容器时退回整窗，行为与旧版一致。 */
+    function conversationClip() {
+      var clip = { top: 0, bottom: window.innerHeight }
+      var flow = document.querySelector('[data-chat-flow]') || document.querySelector('[data-focus-flow]')
+      var rows = flow === null ? allMessageRows() : []
+      var anchorEl = flow !== null ? flow : (rows.length > 0 ? rows[0] : null)
+      var scroller = anchorEl !== null
+        ? anchorEl.closest('[data-conversation-scroll]')
+        : document.querySelector('[data-conversation-scroll]')
+      if (scroller === null && anchorEl !== null) {
+        for (var el = anchorEl.parentElement; el !== null && el !== document.body; el = el.parentElement) {
+          if (!/auto|scroll|hidden|clip/.test(getComputedStyle(el).overflowY)) continue
+          scroller = el
+          break
+        }
+      }
+      if (scroller !== null) {
+        var box = scroller.getBoundingClientRect()
+        if (box.height > 0) {
+          clip.top = Math.max(0, Math.min(window.innerHeight, box.top))
+          clip.bottom = Math.max(clip.top, Math.min(window.innerHeight, box.bottom))
+        }
+      }
+      return clip
+    }
+
     function quoteWithSource(q) {
       return q.sourcePath ? '[' + q.sourcePath + ']\n' + q.text : q.text
     }
@@ -1613,9 +1643,10 @@ window.__ModuleLoader__.load({
         if (ui.pendingChip !== null) {
           var chipRect = focusChipRect()
           if (chipRect === null) chipRect = rect
+          var minTop = (ui.clipTop != null ? ui.clipTop : 0) + 4
           var chipTop = chipRect.top - 20
-          if (chipTop < 4) chipTop = Math.min(chipRect.top + 2, window.innerHeight - 22)
-          if (chipTop < 4) chipTop = 4
+          if (chipTop < minTop) chipTop = Math.min(chipRect.top + 2, window.innerHeight - 22)
+          if (chipTop < minTop) chipTop = minTop
           ui.pendingChip.style.left = Math.max(4, Math.min(chipRect.left - 4, window.innerWidth - 24)) + 'px'
           ui.pendingChip.style.top = chipTop + 'px'
           ui.pendingChip.style.display = ui.composerTop != null && chipTop + 22 > ui.composerTop ? 'none' : ''
@@ -2252,9 +2283,10 @@ window.__ModuleLoader__.load({
 
       function positionEditor(card, left, top) {
         var maxTop = (ui.composerTop != null ? ui.composerTop : window.innerHeight) - card.offsetHeight - 8
+        var minTop = (ui.clipTop != null ? ui.clipTop : 0) + 8
         ui.pos = {
           left: Math.max(8, Math.min(left, window.innerWidth - card.offsetWidth - 8)),
-          top: Math.max(8, Math.min(top, maxTop)),
+          top: Math.max(minTop, Math.min(top, maxTop)),
         }
         card.style.left = ui.pos.left + 'px'
         card.style.top = ui.pos.top + 'px'
@@ -2303,19 +2335,32 @@ window.__ModuleLoader__.load({
       }
 
       function renderMarkers() {
-        // 对整个标记层挖去输入框区域；滚动、尺寸变化时即使原文没动也要刷新。
+        // 高亮层挖去输入框区域与会话视图之外的横带；滚动、尺寸变化时即使原文没动也要刷新。
         var composer = document.querySelector('[data-composer-card]')
         var cr = composer !== null ? composer.getBoundingClientRect() : null
         ui.composerTop = cr !== null && cr.width > 0 && cr.height > 0
           ? Math.max(0, Math.min(window.innerHeight, cr.top))
           : window.innerHeight
-        overlay.style.clipPath = cr !== null && cr.width > 0 && cr.height > 0
-          ? 'polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, '
-            + cr.left + 'px ' + cr.top + 'px, ' + cr.right + 'px ' + cr.top + 'px, '
+        // 会话视图的可视框：滚出正文区域的内容必须被裁掉，否则固定层会画到顶栏/底栏上。
+        var clip = conversationClip()
+        ui.clipTop = clip.top
+        ui.clipBottom = clip.bottom
+        var hole = cr !== null && cr.width > 0 && cr.height > 0
+          ? ', ' + cr.left + 'px ' + cr.top + 'px, ' + cr.right + 'px ' + cr.top + 'px, '
             + cr.right + 'px ' + cr.bottom + 'px, ' + cr.left + 'px ' + cr.bottom + 'px, '
-            + cr.left + 'px ' + cr.top + 'px)'
+            + cr.left + 'px ' + cr.top + 'px'
+          : ''
+        var topBand = clip.top > 0
+          ? ', 0px 0px, 100% 0px, 100% ' + clip.top + 'px, 0px ' + clip.top + 'px, 0px 0px'
+          : ''
+        overlay.style.clipPath = hole !== '' || topBand !== ''
+          ? 'polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0' + hole + topBand + ')'
           : 'none'
-        markerLayer.style.clipPath = 'none'
+        // 角标层只裁会话视图这条横带：竖向滚出正文区域的编号被顶部区域遮住（滑进去），
+        // 而不是浮在页签栏上。
+        markerLayer.style.clipPath = clip.top > 0 || clip.bottom < window.innerHeight
+          ? 'inset(' + clip.top + 'px 0px ' + Math.max(0, window.innerHeight - clip.bottom) + 'px 0px)'
+          : 'none'
         if (tipLayer != null) tipLayer.style.clipPath = 'none'
         var sig = markersSignature()
         if (sig !== markersSig) {
@@ -2333,6 +2378,8 @@ window.__ModuleLoader__.load({
 
       /** 只更新已有角标/高亮的坐标，不销毁重建。 */
       function updateMarkerPositions() {
+        var clipTop = ui.clipTop != null ? ui.clipTop : 0
+        var clipBottom = ui.clipBottom != null ? ui.clipBottom : window.innerHeight
         var placed = []
         for (var i = 0; i < ui.quotes.length; i++) {
           var q = ui.quotes[i]
@@ -2358,20 +2405,20 @@ window.__ModuleLoader__.load({
             for (var k = rects.length - 1; k >= 0; k--) {
               var r = rects[k]
               if (r.width === 0 || r.height === 0) continue
-              if (r.top > -8 && r.top < window.innerHeight) { anchor = r; break }
+              if (r.bottom > clipTop && r.top < clipBottom) { anchor = r; break }
             }
           } else {
             for (var k2 = 0; k2 < rects.length; k2++) {
               var r2 = rects[k2]
               if (r2.width === 0 || r2.height === 0) continue
-              if (r2.top > -8 && r2.top < window.innerHeight) { anchor = r2; break }
+              if (r2.bottom > clipTop && r2.top < clipBottom) { anchor = r2; break }
             }
           }
           if (anchor === null) { chip.style.display = 'none'; continue }
           chip.style.display = ''
+          // 角标固定贴在锚点行上方 20px：正文向上滚出会话视图时，角标跟着一起滑出去、
+          // 由标记层的裁剪遮住（旧版把它夹在窗口顶部，于是浮到页签栏上）。
           var chipTop = anchor.top - 20
-          if (chipTop < 4) chipTop = Math.min(anchor.top + 2, window.innerHeight - 22)
-          if (chipTop < 4) chipTop = 4
           var chipLeft = Math.max(4, Math.min(anchor.left - 4, window.innerWidth - 24))
           var tries = 0
           while (tries < 12) {
@@ -2389,12 +2436,17 @@ window.__ModuleLoader__.load({
           chip.style.left = chipLeft + 'px'
           chip.style.top = chipTop + 'px'
           // 角标不压输入框：落进输入框区域就隐藏（不是裁层，避免悬浮卡被裁）。
-          chip.style.display = ui.composerTop != null && chipTop + 22 > ui.composerTop ? 'none' : ''
+          // 整个角标已经滑出会话视图（顶部/底部）时也隐藏：它既看不见，也不该当
+          // 编辑卡片的锚点（chipForQuote 会因此返回 null，让调用方先把原文滚进视野）。
+          var outside = chipTop + 22 <= clipTop || chipTop >= clipBottom
+          chip.style.display = outside || (ui.composerTop != null && chipTop + 22 > ui.composerTop) ? 'none' : ''
         }
       }
 
       function buildMarkers() {
         if (ui.quotes.length === 0) return
+        var clipTop = ui.clipTop != null ? ui.clipTop : 0
+        var clipBottom = ui.clipBottom != null ? ui.clipBottom : window.innerHeight
         var placed = []
         for (var i = 0; i < ui.quotes.length; i++) {
           var q = ui.quotes[i]
@@ -2419,16 +2471,16 @@ window.__ModuleLoader__.load({
             for (var k = rects.length - 1; k >= 0; k--) {
               var r = rects[k]
               if (r.width === 0 || r.height === 0) continue
-              if (r.top > -8 && r.top < window.innerHeight) { anchor = r; break }
+              if (r.bottom > clipTop && r.top < clipBottom) { anchor = r; break }
             }
           } else {
             for (var k2 = 0; k2 < rects.length; k2++) {
               var r2 = rects[k2]
               if (r2.width === 0 || r2.height === 0) continue
-              if (r2.top > -8 && r2.top < window.innerHeight) { anchor = r2; break }
+              if (r2.bottom > clipTop && r2.top < clipBottom) { anchor = r2; break }
             }
           }
-          // 原文完全在视口外时不显示编号气泡（避免钉在屏幕顶部/底部）
+          // 原文完全滚出会话视图时不显示编号气泡（避免钉在屏幕顶部/底部）
           if (anchor !== null) {
             var chip = document.createElement('div')
             chip.className = 'dsh-ann-num'
@@ -2437,9 +2489,9 @@ window.__ModuleLoader__.load({
             // 随即脱离文档。用 id 属性把「当前正在编辑的那条」标出来，卡片就能在新
             // 角标上重新认领锚点（见 followEditorAnchor）。
             chip.setAttribute('data-ann-chip-for', q.id)
+            // 贴在锚点行上方 20px，不做顶部夹取：正文滑出会话视图时角标跟着滑出去，
+            // 由标记层裁剪遮住（旧版夹到窗口顶部 → 浮在页签栏上方）。
             var chipTop = anchor.top - 20
-            if (chipTop < 4) chipTop = Math.min(anchor.top + 2, window.innerHeight - 22)
-            if (chipTop < 4) chipTop = 4
             var chipLeft = Math.max(4, Math.min(anchor.left - 4, window.innerWidth - 24))
             var tries = 0
             while (tries < 12) {
@@ -2459,7 +2511,8 @@ window.__ModuleLoader__.load({
             placed.push({ left: chipLeft, top: chipTop })
             chip.style.left = chipLeft + 'px'
             chip.style.top = chipTop + 'px'
-            if (ui.composerTop != null && chipTop + 22 > ui.composerTop) chip.style.display = 'none'
+            var outside = chipTop + 22 <= clipTop || chipTop >= clipBottom
+            if (outside || (ui.composerTop != null && chipTop + 22 > ui.composerTop)) chip.style.display = 'none'
             ;(function (q, quoteRect, chipEl) {
               chipEl.addEventListener('mouseenter', function () {
                 if (tipEditing && tipLayer.firstElementChild !== null
@@ -2525,9 +2578,12 @@ window.__ModuleLoader__.load({
         chip.textContent = String(ui.quotes.length + 1)
         var chipAnchor = focusChipRect()
         if (chipAnchor === null) chipAnchor = rect
+        // 临时角标是编辑卡片的落位锚点，必须留在会话视图内：贴着视图顶部时翻到选区
+        // 下方（已保存的编号角标不这么做，它们跟随正文一起滑出、被顶部区域遮住）。
+        var minTop = (ui.clipTop != null ? ui.clipTop : 0) + 4
         var chipTop = chipAnchor.top - 20
-        if (chipTop < 4) chipTop = Math.min(chipAnchor.top + 2, window.innerHeight - 22)
-        if (chipTop < 4) chipTop = 4
+        if (chipTop < minTop) chipTop = Math.min(chipAnchor.top + 2, window.innerHeight - 22)
+        if (chipTop < minTop) chipTop = minTop
         var chipLeft = Math.max(4, Math.min(chipAnchor.left - 4, window.innerWidth - 24))
         chip.style.left = chipLeft + 'px'
         chip.style.top = chipTop + 'px'
@@ -2556,8 +2612,9 @@ window.__ModuleLoader__.load({
         var h = card.offsetHeight || 50
         var left = Math.max(8, Math.min(cr.left + cr.width / 2 - w / 2, window.innerWidth - w - 8))
         var maxTop = (ui.composerTop != null ? ui.composerTop : window.innerHeight) - h - 8
+        var minTop = (ui.clipTop != null ? ui.clipTop : 0) + 8
         var top = Math.min(cr.top - h - 8, maxTop)
-        if (top < 8) top = 8
+        if (top < minTop) top = minTop
         card.style.left = left + 'px'
         card.style.top = top + 'px'
         return true
@@ -2573,10 +2630,11 @@ window.__ModuleLoader__.load({
         var cx = rect.left + rect.width / 2
         var left = Math.max(8, Math.min(cx - w / 2, window.innerWidth - w - 8))
         var maxTop = (ui.composerTop != null ? ui.composerTop : window.innerHeight) - h - 8
+        var minTop = (ui.clipTop != null ? ui.clipTop : 0) + 8
         var top = rect.top - 20 - h - 8
-        if (top < 8) top = 8
+        if (top < minTop) top = minTop
         top = Math.min(top, maxTop)
-        if (top < 8) top = 8
+        if (top < minTop) top = minTop
         card.style.left = left + 'px'
         card.style.top = top + 'px'
       }
