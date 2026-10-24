@@ -1,6 +1,6 @@
 # dsh-annotation
 
-[![npm version](https://img.shields.io/npm/v/@changfenhuang/dsh-annotation?style=flat&label=npm)](https://www.npmjs.com/package/@changfenhuang/dsh-annotation) [![DSH](https://img.shields.io/badge/DSH-up%20to%200.1.6--alpha.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness) [![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE) [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH](https://img.shields.io/badge/DSH-up%20to%200.1.6--alpha.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness) [![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE) [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
 
 验证宿主：DSH 0.1.6-alpha.1；最低支持线仍验证 DSH 0.1.2-rc.1。版本号指 DSH 内核，不是 Desktop 外壳。
 
@@ -60,10 +60,9 @@
 
 ## 安装（官方 bundle 路径 · 唯一）
 
+从 GitHub 公开源码安装：
+
 ```sh
-# npm 公开包安装（无需 npm 账号）
-dsh plugin --profile web add @changfenhuang/dsh-annotation
-# 也可以直接从 GitHub 公开源码安装
 dsh plugin --profile web add github:zuojinxin/dsh-annotation
 # 本地路径安装（开发调试）
 cd /path/to/dsh-annotation
@@ -71,21 +70,13 @@ dsh plugin --profile web add .
 # 重启 web —— 见下方「重启 web 服务」
 ```
 
-如果只想把它作为 Node 依赖加入现有项目：
-
-```sh
-npm install @changfenhuang/dsh-annotation
-```
-
-> `npm install` 只添加依赖，不会把插件注册到 DSH；在 DSH 中使用时仍应执行上面的 `dsh plugin add`。
-
 ### 从旧 `@omdsh-dev` 包名迁移
 
-如果你在包名从 `@omdsh-dev` 改为 `@changfenhuang` 之前安装过插件，请先删除旧依赖，再安装改名后的包：
+如果你在包名从 `@omdsh-dev` 改为 `@changfenhuang` 之前安装过插件，请先删除旧依赖，再从 GitHub 重新安装：
 
 ```sh
 dsh plugin --profile web remove @omdsh-dev/dsh-annotation
-dsh plugin --profile web add @changfenhuang/dsh-annotation
+dsh plugin --profile web add github:zuojinxin/dsh-annotation
 ```
 
 如果 `dsh web` 仍然启动失败并提到 `@omdsh-dev/dsh-annotation`，请只删除 `~/.dsh/profiles/web/cordis.patch.yml` 中使用该旧名字的 `dsh-annotation` 登记。插件现在会自行提供 `@changfenhuang/dsh-annotation` 登记。
@@ -136,16 +127,6 @@ systemctl --user restart dsh-web
 - **IME 安全**：Enter 拦截带 `isComposing`/keyCode 229 守卫；不 DOM 硬改 composer textarea；`setDraft` 仅在提交前一刻拼批注块，不覆盖用户草稿
 - **不依赖发送完成事件链**：气泡装饰走 MutationObserver + 轮询（`watchInputDraft` 在初始化时会话未加载时会失效，仅作暂存入口）
 - **聚焦对话兼容**：支持 [dsh-focus-chat](https://github.com/dingyi222666/dsh-focus-chat) 的聚焦会话视图——其助手行是 `[data-focus-flow]` 内 class 含 `*_assistant`（CSS Modules 哈希名）的容器（流式期间行带 `data-streaming`）；选区批注、回复芯片、角标重新定位在聚焦 tab 与主视图一样可用
-
-## 版本历史
-
-| 版本 | 内容 |
-|---|---|
-| v1.4.x | 语言跟随：zh/en UI 文案与批注协议块，经 DSH `locale` 服务实时切换 |
-| v1.3.x | 回复逐条对照：格式指令注入 + 「Annotation N：」可悬浮芯片（TreeWalker 快照修复） |
-| v1.2.x | 气泡隐藏批注块：MutationObserver 微任务零闪烁 + 轮询兜底 + 历史消息修复 |
-| v1.x | 自包含批注流（取代 v0.9 chip 设计）：capture Enter 拼稿随消息发送 |
-| v0.9.x | 早期 chip 设计（insertReference + slash codec），已被 v1.x 取代 |
 
 ## 友情链接
 

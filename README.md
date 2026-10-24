@@ -1,6 +1,6 @@
 # dsh-annotation
 
-[![npm version](https://img.shields.io/npm/v/@changfenhuang/dsh-annotation?style=flat&label=npm)](https://www.npmjs.com/package/@changfenhuang/dsh-annotation) [![DSH](https://img.shields.io/badge/DSH-up%20to%200.1.6--alpha.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness) [![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE) [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH](https://img.shields.io/badge/DSH-up%20to%200.1.6--alpha.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness) [![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE) [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
 
 Verified hosts: DSH 0.1.6-alpha.1 and the 0.1.2-rc.1 minimum. These are core versions, not Desktop shell versions.
 
@@ -60,10 +60,9 @@ Select assistant text ──▶ Toolbar "Annotate" ──▶ Write note / save e
 
 ## Install (official bundle path · the only one)
 
+Install from the public GitHub source:
+
 ```sh
-# Public npm package (works without an npm account)
-dsh plugin --profile web add @changfenhuang/dsh-annotation
-# Or install directly from the public GitHub source
 dsh plugin --profile web add github:zuojinxin/dsh-annotation
 # local path install (development / debugging)
 cd /path/to/dsh-annotation
@@ -71,21 +70,13 @@ dsh plugin --profile web add .
 # restart the web service — see "Restarting the web service" below
 ```
 
-To add it only as a Node dependency in an existing project:
-
-```sh
-npm install @changfenhuang/dsh-annotation
-```
-
-> `npm install` only adds the dependency; it does not register the plugin with DSH. Use `dsh plugin add` above when installing it into DSH.
-
 ### Migrating from the old `@omdsh-dev` package name
 
-If you installed the plugin under the old `@omdsh-dev` name, remove that dependency before installing the renamed package:
+If you installed the plugin under the old `@omdsh-dev` name, remove that dependency before installing again from GitHub:
 
 ```sh
 dsh plugin --profile web remove @omdsh-dev/dsh-annotation
-dsh plugin --profile web add @changfenhuang/dsh-annotation
+dsh plugin --profile web add github:zuojinxin/dsh-annotation
 ```
 
 If `dsh web` still fails and mentions `@omdsh-dev/dsh-annotation`, remove only the stale `dsh-annotation` entry that uses that old name from `~/.dsh/profiles/web/cordis.patch.yml`. The plugin now supplies the `@changfenhuang/dsh-annotation` entry itself.
@@ -136,16 +127,6 @@ Environments without a service manager (e.g. some containers) often need **no re
 - **IME-safe**: the Enter interception carries `isComposing` / keyCode 229 guards; never hard-edits the composer textarea's DOM; `setDraft` only assembles the annotation block at the last moment before submit and never clobbers the user's draft
 - **No reliance on send-completion event chains**: bubble decoration uses MutationObserver + polling (`watchInputDraft` can be ineffective before the session is loaded at init; it is only a staging entry)
 - **Focus-chat compatible**: works inside the focus conversation view of [dsh-focus-chat](https://github.com/dingyi222666/dsh-focus-chat) — assistant rows there are `[data-focus-flow]` containers with a `*_assistant` CSS-Modules class (plus `data-streaming` while running); selection, annotation, reply chips, and re-anchoring all work in the focus tab alongside the main chat view
-
-## Version history
-
-| Version | Highlights |
-|---|---|
-| v1.4.x | Locale-aware: zh/en UI copy and annotation protocol block, live switch via DSH `locale` service |
-| v1.3.x | Numbered reply correspondence: format-instruction injection + hoverable `Annotation N:` chips (TreeWalker snapshot fix) |
-| v1.2.x | Hidden annotation block in bubble: MutationObserver microtask zero-flicker + polling fallback + historical-message repair |
-| v1.x | Self-contained annotation flow (replaces the v0.9 chip design): capture-Enter assembles the block and sends it with the message |
-| v0.9.x | Early chip design (insertReference + slash codec), superseded by v1.x |
 
 ## Friendly links
 
