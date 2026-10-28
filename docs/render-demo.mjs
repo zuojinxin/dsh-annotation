@@ -40,6 +40,13 @@ const FRAMES = FPS * DURATION;
 const WIDTH = 1280;
 const HEIGHT = 760;
 const STILL_WIDTH = WIDTH - 392;
+/* Capture at 2x and let ffmpeg do the downscaling. Rendering the page at 1x and
+   shrinking that to the README width is what makes text look soft: every glyph
+   is already anti-aliased at the wrong size, so the scale only smears it.
+   Supersampling twice the density and resampling down keeps the strokes thin. */
+const DSF = 2;
+const GIF_WIDTH = 900;
+const STILL_OUT_WIDTH = 960;
 const PAGE_URL = pathToFileURL(join(here, 'preview.html')).href;
 
 /* the frame -> expectation table. Each entry is a checkpoint the recording has
@@ -57,7 +64,7 @@ const CHECKS = [
 ];
 
 const log = (...a) => console.log(...a);
-log('capture plan:', `${FRAMES} frames @ ${FPS}fps, ${WIDTH}x${HEIGHT}`);
+log('capture plan:', `${FRAMES} frames @ ${FPS}fps, ${WIDTH}x${HEIGHT} at ${DSF}x`);
 
 const temp = await mkdtemp(join(tmpdir(), 'dsh-annotation-demo-'));
 const framesDir = join(temp, 'frames');
@@ -116,7 +123,7 @@ try {
   await call('Page.enable');
   await call('Runtime.enable');
   await call('Emulation.setDeviceMetricsOverride', {
-    width: WIDTH, height: HEIGHT, deviceScaleFactor: 1, mobile: false,
+    width: WIDTH, height: HEIGHT, deviceScaleFactor: DSF, mobile: false,
   });
   await call('Page.navigate', { url: PAGE_URL });
 
@@ -162,7 +169,7 @@ try {
     const source = join(framesDir, `${String(Math.round(t * FPS)).padStart(4, '0')}.png`);
     execFileSync(FFMPEG, [
       '-v', 'error', '-y', '-i', source,
-      '-vf', `crop=${STILL_WIDTH}:${HEIGHT}:0:0`,
+      '-vf', `crop=${STILL_WIDTH * DSF}:${HEIGHT * DSF}:0:0,scale=${STILL_OUT_WIDTH}:-1:flags=lanczos`,
       join(shots, name),
     ]);
     log(`  still ${name} ← t=${t}s`);
@@ -192,7 +199,7 @@ try {
   execFileSync(FFMPEG, [
     '-v', 'error', '-y',
     '-i', mp4,
-    '-vf', 'fps=12,scale=760:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=sierra2_4a',
+    '-vf', `fps=12,scale=${GIF_WIDTH}:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=sierra2_4a`,
     '-loop', '0',
     gif,
   ]);
