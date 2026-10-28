@@ -52,7 +52,7 @@ process.on('exit', () => {
 })
 
 try {
-  const source = INSTALL === 'tarball' ? TARBALL : INSTALL === 'npm' ? '@changfenhuang/dsh-annotation' : `link:${REPO_ROOT}`
+  const source = INSTALL === 'tarball' ? TARBALL : INSTALL === 'npm' ? '@zuojinxin/dsh-annotation' : `link:${REPO_ROOT}`
   const installed = spawnSync(DSH_BIN, ['plugin', '--profile', 'web', 'add', source], { env, stdio: 'inherit' })
   if (installed.status !== 0) fail('插件安装失败')
 
@@ -96,12 +96,12 @@ try {
     const entries = window.__DSH_BOOT__?.entries
     return {
       clientUrl: Array.isArray(entries)
-        ? entries.find(entry => entry.id === '@changfenhuang/dsh-annotation')?.url
+        ? entries.find(entry => entry.id === '@zuojinxin/dsh-annotation')?.url
         : undefined,
       mounted: document.querySelector('[data-annotation-for-dsh]') !== null,
     }
   })
-  const clientUrl = state.clientUrl ?? '/plugins/@changfenhuang/dsh-annotation/client.js'
+  const clientUrl = state.clientUrl ?? '/plugins/@zuojinxin/dsh-annotation/client.js'
   const response = await fetch(`http://127.0.0.1:${PORT}${clientUrl}`)
   if (!response.ok) fail(`Annotation bundle 返回 ${response.status}`)
   if (!state.mounted) fail('Annotation bundle 已加载，但页面没有挂载批注入口')

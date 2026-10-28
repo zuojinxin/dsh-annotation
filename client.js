@@ -182,8 +182,8 @@
 // 同时覆盖两种视图结构（见 assistantRows / allMessageRows / assistantRowOf）。
 window.__ModuleLoader__.load({
   // 必须与 package.json "name" 完全一致，否则 client-modules 报：
-  // bundle loaded without registering "@changfenhuang/dsh-annotation"
-  id: '@changfenhuang/dsh-annotation',
+  // bundle loaded without registering "@zuojinxin/dsh-annotation"
+  id: '@zuojinxin/dsh-annotation',
   factory: (require) => {
     'use strict'
     var module = { exports: {} }
@@ -1135,6 +1135,7 @@ window.__ModuleLoader__.load({
       },
     }
 
+    // 存储键前缀**不跟随包名**：跟随改名会让已安装用户的待发批注全部丢失。
     var PENDING_STORAGE_PREFIX = 'dsh.annotation.pending.v1.'
 
     function pendingStorageKey(sessionId) {
@@ -4137,7 +4138,7 @@ window.__ModuleLoader__.load({
       return teardown
     }
 
-    exports.name = '@changfenhuang/dsh-annotation'
+    exports.name = '@zuojinxin/dsh-annotation'
     exports.inject = ['sessions', 'conversation', 'locale']
     exports.apply = apply
 
