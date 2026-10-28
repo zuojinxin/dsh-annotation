@@ -1,137 +1,66 @@
 # dsh-annotation
 
-[![DSH](https://img.shields.io/badge/DSH-up%20to%200.1.6--alpha.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness) [![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE) [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
-
-Verified hosts: DSH 0.1.6-alpha.1 and the 0.1.2-rc.1 minimum. These are core versions, not Desktop shell versions.
-
-Sidebar file annotations (DSH 0.1.6-alpha.1): select plain text, Markdown, or code in a workspace file preview and use the same annotate, save, and Enter-to-send flow. The editor and model-facing quote include the file path. After reloading and reopening the original file, its markers are restored; identical passages in different files remain separate. PDF, images, and HTML inside iframes are not covered.
-
-<div align="center">
+Select text in a DSH conversation or a workspace file preview, annotate it, and press Enter — the annotation block rides along with your message, and the model answers each annotation by number.
 
 **English** · [简体中文](./README.zh-CN.md)
 
-</div>
+[![DSH](https://img.shields.io/badge/DSH-up%20to%200.2.1--rc.3-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness) [![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE) [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
 
-<p align="center">Selection-annotation plugin for DSH Web: select text → annotate → press Enter to send it along with your message; the model replies to each annotation by number.</p>
+## What it does
 
-<p align="center"><strong>🌐 <a href="https://omdsh-dev.github.io/dsh-annotation/">Live Product Site — Explore dsh-annotation in DSH</a></strong></p>
+- **Annotate on selection** — select assistant text (or text in a workspace file preview), pick 批注 in the toolbar, write the note. Leaving it empty marks the passage without a comment.
+- **Numbered markers** — the passage gets a highlight and a blue index number that stays anchored while you scroll and dodges collisions.
+- **Collect across turns** — annotations pile up from any number of messages and turns, numbered from 1.
+- **Pending tag** — a `N 条批注` tag next to the composer lists every pending annotation on hover and deletes them one by one.
+- **Send with Enter** — the annotation block goes out together with whatever you typed. The model receives the full block.
+- **Clean user bubble** — the block is stripped from the bubble before the browser paints, so your own message shows only your question plus the tag; a reload repairs history too.
+- **Numbered reply** — the message carries a format instruction, and the model answers `Annotation 1: …` through `Annotation N: …`; each label in the reply becomes a hoverable chip showing the quoted passage and your note.
+- **File annotations** — the same flow works in the sidebar file preview (Markdown, plain text, code). Quotes carry the file path, markers survive a reload, and the same passage in two different files stays two separate annotations.
 
-<p align="center">
-  <img src="https://badgen.net/badge/license/MIT/blue" alt="license">
-</p>
-<img width="2940" height="1770" alt="image" src="https://github.com/user-attachments/assets/c3186efc-44d3-4e7f-9523-1902d9d037e9" />
-<img width="2940" height="1770" alt="image" src="https://github.com/user-attachments/assets/0b48ac02-4648-4b94-8d8f-344f8b7c25b4" />
-<img width="2940" height="1770" alt="image" src="https://github.com/user-attachments/assets/8b2610d0-3d00-41be-b314-bac2fe616787" />
-<img width="2940" height="1770" alt="image" src="https://github.com/user-attachments/assets/9b66deea-3786-4296-9b0d-52873a15f5e1" />
-
-Select any text in an assistant reply to annotate it (the annotation body may be left empty = just mark the passage). Annotations accumulate across messages and turns. An **Annotations ×N** chip appears next to the input box — hover to view all annotations, remove them one by one. Press Enter and the annotation block goes to the model together with whatever question is in the input box. **The annotation block never shows up as text in your own message bubble** — only the question plus the chip (content visible on hover; hidden before paint, zero flicker). The model replies with `Annotation 1: …` … `Annotation N: …`, one per annotation, and every Annotation label in the reply is a hoverable chip showing the annotated passage and your note.
-
-Form: official **bundle plugin** (`dsh.bundle` + a `dsh.client` declaration in package.json, injected into the browser via client-modules; the Node half is an empty implementation). **Zero core changes** — no DSH files are touched; `cordis.patch.yml` only inserts its own id once, and the profile patch stays `[]`.
-
-## Features
-
-| Feature | Description |
-|---|---|
-| Select-to-annotate | Select assistant text → toolbar "Annotate" → write your note (may be empty); dismiss by clicking elsewhere or pressing Esc |
-| Numbered marker + highlight | A blue numbered marker + highlight anchored to the passage, viewport-anchored with collision avoidance, never lost when scrolled out of view |
-| Cross-turn collection | Any number of annotations accumulate across messages/turns, numbered from 1 |
-| "Annotations ×N" chip | Small chip beside the input box; hover shows every annotation, deletable individually |
-| Enter sends with your message | Annotation block + the question in the input box are sent to the model together (the model receives the full content) |
-| Hidden in your bubble | The annotation block is removed from your bubble's DOM the moment you send (before the browser paints), leaving only the question + the chip (hover to view); historical messages self-heal after a refresh |
-| Numbered reply correspondence | A format instruction is injected into the message so the model replies `Annotation 1: …` … `Annotation N: …` one by one |
-| Reply annotation chips | `Annotation N:` in the reply renders as hoverable chips showing the passage + your note |
-
-## Interaction flow
+## Flow
 
 ```
-Select assistant text ──▶ Toolbar "Annotate" ──▶ Write note / save empty ──▶ Blue numbered marker + highlight
-        ▲                                                        │
-        └────────────── any number, accumulate across turns ◀────┘
-                                │
-                                ▼
-              "Annotations ×N" chip beside the input (hover to view / delete)
-                                │
-                            Press Enter
-                                ▼
-    Model receives: annotation block (number + passage + note) + your question
-    Your bubble: question only + "Annotations ×N" chip (zero flicker)
-    Model reply: Annotation 1: … Annotation 2: … (hoverable chips)
+select text ──▶ toolbar 批注 ──▶ write or leave empty ──▶ highlight + index number
+      ▲                                                          │
+      └───────────── any number, across turns ◀──────────────────┘
+                          │
+                          ▼
+             N 条批注 tag beside the composer (hover / delete)
+                          │
+                       Enter
+                          ▼
+   model receives: annotation block (index + quote + note) + your question
+   your bubble:   only the question + the tag, no block text
+   model reply:   Annotation 1: … Annotation 2: … (hoverable chips)
 ```
 
-## Install (official bundle path · the only one)
+## Install
 
-Install from the public GitHub source:
-
-```sh
-dsh plugin --profile web add github:zuojinxin/dsh-annotation
-# local path install (development / debugging)
-cd /path/to/dsh-annotation
-dsh plugin --profile web add .
-# restart the web service — see "Restarting the web service" below
+```bash
+dsh plugin --profile desktop add 'github:zuojinxin/dsh-annotation'
 ```
 
-### Migrating from the old `@omdsh-dev` package name
+Restart the DSH desktop app to load it.
 
-If you installed the plugin under the old `@omdsh-dev` name, remove that dependency before installing again from GitHub:
+## Notes
 
-```sh
-dsh plugin --profile web remove @omdsh-dev/dsh-annotation
-dsh plugin --profile web add github:zuojinxin/dsh-annotation
+- Built for DeepSeek Harness 0.2.1-rc.3 (desktop). The plugin locates the host by CSS classes and DOM structure, so a host upgrade may need a matching update.
+- PDF, images and HTML inside an iframe are out of scope; text in the file preview and in chat messages is in scope.
+- While the toolbar is open on an assistant passage it takes over the host's own text-quote overlay, so there is only one entry point.
+- UI strings and the annotation protocol follow the host `locale` (Chinese / English, switchable at runtime).
+- Pending annotations live in browser `localStorage`; clearing site data or switching browsers drops them.
+- Disabling the plugin removes every element and style it added.
+
+## Development
+
+```bash
+npm test                  # jsdom unit tests
+node --check client.js    # the browser bundle is hand-written, not built
+node docs/render-demo.mjs # re-render the animation and screenshots (headless Edge + ffmpeg)
 ```
 
-If `dsh web` still fails and mentions `@omdsh-dev/dsh-annotation`, remove only the stale `dsh-annotation` entry that uses that old name from `~/.dsh/profiles/web/cordis.patch.yml`. The plugin now supplies the `@changfenhuang/dsh-annotation` entry itself.
-
-| Do | Don't |
-|----|------|
-| Only `dsh plugin add` / only write `bundles` | **Never** insert the same id again in the profile/home `cordis.patch.yml` |
-
-Self-check:
-
-```sh
-dsh --profile web --dump-config | rg "id: dsh-annotation"   # must be exactly 1 line
-dsh web --no-open   # open the printed one-time token URL in a browser
-```
-
-In the browser console, `window.__DSH_BOOT__.entries.find(({ id }) => id === '@changfenhuang/dsh-annotation')` must return an entry with a `url`. dsh 0.1.2 no longer exposes the old bare per-plugin URL.
-
-## Restarting the web service
-
-Pick the command for your platform:
-
-```sh
-# macOS (launchd)
-launchctl kickstart -k "gui/$(id -u)/com.dsh.web"
-
-# WSL / Linux with systemd user services
-# The unit name may differ by install method; check with:
-#   systemctl --user list-units | rg dsh
-systemctl --user restart dsh-web
-```
-
-Environments without a service manager (e.g. some containers) often need **no restart at all**: `client.js` is served per request with no caching, so a hard refresh (Cmd/Ctrl+Shift+R) picks up plugin changes. The self-check commands above are platform-neutral.
-
-## Architecture notes
-
-- **Pure browser-side**: everything lives in `client.js` (a hand-written CJS bundle, no build step, served no-cache per request)
-- **Message format** (the literal protocol block sent to the model; follows the DSH `locale` preference — zh or en):
-
-  ```
-  zh: 我批注了以下 N 处内容…\n\n1. 原文\n   批注：…\n\n请用「Annotation 1：…」…\n\n提问：
-  en: I annotated the following N passage(s)…\n\n1. quote\n   Note: …\n\nPlease respond… "Annotation 1: …"…\n\nAsk:
-  ```
-
-  The zh delimiter is 「提问：」(ask:) rather than 「问题：」(question:) — the heading line "回答我的问题：" also contains the latter, and the bubble-hiding surgery would misfire on it; the en delimiter is `Ask:`. Hiding and reverse-parsing accept both languages plus the legacy 「问题：」 marker.
-- **Bubble hiding**: user bubbles are plain-text rendered (a single MessageText node, not markdown); a MutationObserver in the microtask phase (before paint) splits at the last `\n提问：`, cuts the annotation block, and attaches the chip; a 1 s polling fallback plus historical-message repair after refresh
-- **Reply chips**: after streaming settles (`data-streaming` removed), each `Annotation N:` is replaced with a hoverable chip; item data is stored on the most recent user message carrying the annotation tag (`tag.__annotationItems`) and rebuilt after refresh; **snapshot the text nodes collected by the TreeWalker before touching the DOM, then replace one by one** — replacing a child mid-walk invalidates the walker pointer and only the first node gets processed
-- **Locale-aware**: UI copy and the protocol block follow DSH's `locale` service (`zh`/`en`, live switch); historical bubbles stay parseable across languages; missing locale service falls back to zh
-- **IME-safe**: the Enter interception carries `isComposing` / keyCode 229 guards; never hard-edits the composer textarea's DOM; `setDraft` only assembles the annotation block at the last moment before submit and never clobbers the user's draft
-- **No reliance on send-completion event chains**: bubble decoration uses MutationObserver + polling (`watchInputDraft` can be ineffective before the session is loaded at init; it is only a staging entry)
-- **Focus-chat compatible**: works inside the focus conversation view of [dsh-focus-chat](https://github.com/dingyi222666/dsh-focus-chat) — assistant rows there are `[data-focus-flow]` containers with a `*_assistant` CSS-Modules class (plus `data-streaming` while running); selection, annotation, reply chips, and re-anchoring all work in the focus tab alongside the main chat view
-
-## Friendly links
-
-- [Linux.do](https://linux.do)
+The browser-level checks (`test/overlay-browser.mjs`, `test/sidebar-browser.mjs`) need a Playwright installation: point `PLAYWRIGHT_MODULE` at an existing `playwright-core/index.mjs`.
 
 ## License
 
-MIT
+[MIT](./LICENSE).

@@ -1,137 +1,66 @@
 # dsh-annotation
 
-[![DSH](https://img.shields.io/badge/DSH-up%20to%200.1.6--alpha.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness) [![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE) [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
-
-验证宿主：DSH 0.1.6-alpha.1；最低支持线仍验证 DSH 0.1.2-rc.1。版本号指 DSH 内核，不是 Desktop 外壳。
-
-侧边栏文件批注（DSH 0.1.6-alpha.1）：在工作区文件预览中选中文本、Markdown 或代码正文，即可沿用同一套批注、保存和回车发送流程。编辑器和发给模型的引用包含文件路径；刷新并重新打开原文件后恢复标记，同文不同文件可分别批注。当前不包含 PDF、图片或 iframe 内 HTML。
-
-<div align="center">
+在 DSH 对话里或工作区文件预览里选中文字，写一条批注，回车——批注块随你的消息一起发出，模型逐条按编号回答。
 
 [English](./README.md) · **简体中文**
 
-</div>
+[![DSH](https://img.shields.io/badge/DSH-up%20to%200.2.1--rc.3-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness) [![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE) [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
 
-<p align="center">DSH Web 选中批注插件：选文字 → 批注 → 回车随消息发给模型，回复按批注编号逐条对照</p>
+## 功能
 
-<p align="center"><strong>🌐 <a href="https://omdsh-dev.github.io/dsh-annotation/">在线产品站：在 DSH 中体验 dsh-annotation</a></strong></p>
-
-<p align="center">
-  <img src="https://badgen.net/badge/license/MIT/blue" alt="license">
-</p>
-<img width="2940" height="1770" alt="image" src="https://github.com/user-attachments/assets/c3186efc-44d3-4e7f-9523-1902d9d037e9" />
-<img width="2940" height="1770" alt="image" src="https://github.com/user-attachments/assets/0b48ac02-4648-4b94-8d8f-344f8b7c25b4" />
-<img width="2940" height="1770" alt="image" src="https://github.com/user-attachments/assets/8b2610d0-3d00-41be-b314-bac2fe616787" />
-<img width="2940" height="1770" alt="image" src="https://github.com/user-attachments/assets/9b66deea-3786-4296-9b0d-52873a15f5e1" />
-
-选中助手回复里的任意文字即可批注（批注内容可留空 = 仅标记原文），跨消息、跨回合连续收集；底部输入框旁出现「批注 ×N」标签（悬浮可见全部内容、可删单条）；直接回车，批注块随输入框里的问题一起发给模型。**你的消息气泡里不会出现批注块文本**——只显示问题和「批注 ×N」标签（hover 看内容，绘制前隐藏、零闪烁）；模型回复按「Annotation 1：…」逐条回应，回复里的每个 Annotation 标签都可悬浮查看对应批注的原文与内容。
-
-形态：官方 **bundle 插件**（`dsh.bundle` + package.json `dsh.client` 声明，经 client-modules 注入浏览器端，Node half 为空实现）。**零核心改动**——不改 DSH 本体任何文件，`cordis.patch.yml` 仅一次 `insert` 自身 id，profile patch 保持 `[]`。
-
-## 能力
-
-| 功能 | 说明 |
-|---|---|
-| 选中即批注 | 选中助手文字 → 工具条「批注」→ 直接写批注（可留空），点选外处或 Esc 收起 |
-| 编号脚标 + 高亮 | 原文位置亮蓝编号 + 高亮，视口内锚定、碰撞避让，滚出屏幕不丢失 |
-| 跨回合收集 | 任意多条批注跨消息/回合累积，编号从 1 开始 |
-| 「批注 ×N」标签 | 输入框旁小标签，悬浮显示全部批注内容，可逐条删除 |
-| 回车随消息发送 | 批注块 + 输入框问题一起发给模型（模型收到完整内容） |
-| 气泡隐藏批注块 | 发送瞬间（浏览器绘制前）批注块从气泡 DOM 隐藏，只留问题 + 「批注 ×N」标签，hover 可见内容；刷新后历史消息自动修复 |
-| 回复逐条对照 | 消息内注入格式指令，模型按「Annotation 1：…」…「Annotation N：…」逐条回应 |
-| 回复批注芯片 | 回复里的「Annotation N：」渲染为可悬浮芯片，hover 显示该批注的原文 + 批注内容 |
+- **选中即批注**：选中助手正文（或工作区文件预览里的文字），工具条点「批注」写备注；留空也能保存，等于标出位置而不写意见。
+- **编号角标**：原文留下高亮与蓝色编号角标，滚动时跟随正文，靠近视口边缘自动避让。
+- **跨回合收集**：可以在任意多条消息、多个回合里持续追加批注，统一从 1 编号。
+- **待发标签**：输入框旁出现 `N 条批注`，悬停列出全部待发批注，可逐条删除。
+- **回车即发**：批注块与你输入的问题一起发出，模型拿到完整批注块。
+- **气泡干净**：发送后用户气泡只留你的问题加标签，批注块在浏览器绘制前就被摘掉；刷新历史也会自愈。
+- **逐条对照回复**：消息里带上格式约束，模型按 `Annotation 1: …` 到 `Annotation N: …` 回答，回复里的编号变成可悬停芯片，回看原文与批注。
+- **文件批注**：侧边栏文件预览（Markdown、纯文本、代码）走同一套流程，引用带文件路径，角标刷新后恢复，同一句话出现在两个文件里也不会串。
 
 ## 交互流
 
 ```
-选中助手文字 ──▶ 工具条「批注」──▶ 写批注/留空保存 ──▶ 原文亮蓝编号+高亮
-        ▲                                                    │
-        └────────────── 任意多条、跨回合累积 ◀────────────────┘
-                        │
-                        ▼
-              输入框旁「批注 ×N」标签（hover 看内容/删除）
-                        │
+选中文字 ──▶ 工具条「批注」──▶ 写备注或留空 ──▶ 高亮 + 编号角标
+    ▲                                              │
+    └──────── 任意条数，跨回合追加 ◀───────────────┘
+                       │
+                       ▼
+          输入框旁「N 条批注」标签（悬停查看 / 逐条删除）
+                       │
                     回车发送
-                        ▼
-   模型收到：批注块（编号+原文+批注）+ 你的问题
-   你的气泡：只显示问题 +「批注 ×N」标签（零闪烁）
-   模型回复：Annotation 1：… Annotation 2：…（可悬浮芯片）
+                       ▼
+   模型收到：批注块（编号 + 原文 + 批注）+ 你的问题
+   你的气泡：只有问题 + 标签，不含批注块原文
+   模型回复：Annotation 1: … Annotation 2: …（可悬停芯片）
 ```
 
-## 安装（官方 bundle 路径 · 唯一）
+## 安装
 
-从 GitHub 公开源码安装：
-
-```sh
-dsh plugin --profile web add github:zuojinxin/dsh-annotation
-# 本地路径安装（开发调试）
-cd /path/to/dsh-annotation
-dsh plugin --profile web add .
-# 重启 web —— 见下方「重启 web 服务」
+```bash
+dsh plugin --profile desktop add 'github:zuojinxin/dsh-annotation'
 ```
 
-### 从旧 `@omdsh-dev` 包名迁移
+装完重启 DSH 桌面版生效。
 
-如果你在包名从 `@omdsh-dev` 改为 `@changfenhuang` 之前安装过插件，请先删除旧依赖，再从 GitHub 重新安装：
+## 说明
 
-```sh
-dsh plugin --profile web remove @omdsh-dev/dsh-annotation
-dsh plugin --profile web add github:zuojinxin/dsh-annotation
+- 面向 DeepSeek Harness 0.2.1-rc.3（桌面版）。插件靠宿主 CSS 类名与 DOM 结构定位，DSH 升级后可能需要适配。
+- 支持对话消息正文与工作区文件预览里的文字；PDF、图片、iframe 内的 HTML 不在范围内。
+- 选中助手正文时，批注工具条会接管宿主自带的引用浮层，只留一个入口。
+- 界面文案与批注协议跟随宿主 `locale`（中文 / 英文，可运行时切换）。
+- 待发批注存在浏览器 `localStorage`，换浏览器或清站点数据会丢。
+- 禁用插件后，页面上由它添加的元素和样式会全部移除。
+
+## 开发
+
+```bash
+npm test                  # jsdom 单元测试
+node --check client.js    # 浏览器端是手写文件，不是构建产物
+node docs/render-demo.mjs # 重制动图与截图（无头 Edge + ffmpeg）
 ```
 
-如果 `dsh web` 仍然启动失败并提到 `@omdsh-dev/dsh-annotation`，请只删除 `~/.dsh/profiles/web/cordis.patch.yml` 中使用该旧名字的 `dsh-annotation` 登记。插件现在会自行提供 `@changfenhuang/dsh-annotation` 登记。
+浏览器级检查（`test/overlay-browser.mjs`、`test/sidebar-browser.mjs`）需要 Playwright：把 `PLAYWRIGHT_MODULE` 指向已有的 `playwright-core/index.mjs`。
 
-| 做 | 不做 |
-|----|------|
-| 只 `dsh plugin add` / 只写 `bundles` | **不要**再在 profile/home `cordis.patch.yml` insert 同 id |
+## 许可
 
-自检：
-
-```sh
-dsh --profile web --dump-config | rg "id: dsh-annotation"   # 必须恰好 1 行
-dsh web --no-open   # 复制输出的一次性令牌地址并在浏览器打开
-```
-
-在浏览器控制台执行 `window.__DSH_BOOT__.entries.find(({ id }) => id === '@changfenhuang/dsh-annotation')`，必须返回带 `url` 的登记；dsh 0.1.2 起不再开放旧版单插件裸地址。
-
-## 重启 web 服务
-
-按平台选择对应命令：
-
-```sh
-# macOS（launchd）
-launchctl kickstart -k "gui/$(id -u)/com.dsh.web"
-
-# WSL / Linux（systemd 用户服务）
-# 服务名可能因安装方式而异，可用以下命令确认：
-#   systemctl --user list-units | rg dsh
-systemctl --user restart dsh-web
-```
-
-没有服务管理器的环境（如部分容器）通常**不需要重启**：`client.js` 按请求读取、no-cache，硬刷新（Cmd/Ctrl+Shift+R）即可加载插件改动。上面的自检命令跨平台通用。
-
-## 架构要点
-
-- **纯浏览器端**：全部能力在 `client.js`（hand-written CJS bundle，无构建步骤，按请求读取 no-cache）
-- **消息格式**（跟随 DSH `locale` 语言偏好，zh/en 双语）：
-
-  ```
-  zh：我批注了以下 N 处内容…\n\n1. 原文\n   批注：…\n\n请用「Annotation 1：…」…\n\n提问：
-  en：I annotated the following N passage(s)…\n\n1. quote\n   Note: …\n\nPlease respond… "Annotation 1: …"…\n\nAsk:
-  ```
-
-  （zh 分隔标记用「提问：」而非「问题：」——标题行「回答我的问题：」里也含它，气泡隐藏手术会误命中；en 用 `Ask:`。隐藏手术与反解析同时兼容两种语言及「问题：」老格式）
-- **气泡隐藏**：用户气泡是纯文本渲染（MessageText 单节点，非 markdown）；MutationObserver 微任务阶段（绘制前）按最后一个 `\n提问：` 切掉批注块、贴「批注 ×N」标签；1s 轮询兜底 + 刷新后历史消息自动修复
-- **回复芯片**：回复流式结束后（`data-streaming` 移除），把「Annotation N：」替换为可悬浮芯片；条目数据存于最近一条带批注标签的用户消息上（`tag.__annotationItems`），刷新后自动重建；**改 DOM 前先快照 TreeWalker 收集的文本节点再逐个替换**（遍历中途 replaceChild 会让 walker 指针失效，只处理到第一个节点）
-- **语言跟随**：UI 文案与批注协议块跟随 DSH `locale` 服务（zh/en，实时切换）；历史气泡跨语言可解析；locale 服务缺失时回退 zh
-- **IME 安全**：Enter 拦截带 `isComposing`/keyCode 229 守卫；不 DOM 硬改 composer textarea；`setDraft` 仅在提交前一刻拼批注块，不覆盖用户草稿
-- **不依赖发送完成事件链**：气泡装饰走 MutationObserver + 轮询（`watchInputDraft` 在初始化时会话未加载时会失效，仅作暂存入口）
-- **聚焦对话兼容**：支持 [dsh-focus-chat](https://github.com/dingyi222666/dsh-focus-chat) 的聚焦会话视图——其助手行是 `[data-focus-flow]` 内 class 含 `*_assistant`（CSS Modules 哈希名）的容器（流式期间行带 `data-streaming`）；选区批注、回复芯片、角标重新定位在聚焦 tab 与主视图一样可用
-
-## 友情链接
-
-- [Linux.do](https://linux.do)
-
-## License
-
-MIT
+[MIT](./LICENSE)。
