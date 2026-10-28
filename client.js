@@ -191,6 +191,16 @@ window.__ModuleLoader__.load({
 
     // ============================== 样式 ==============================
     var STYLE_ID = 'annotation-for-dsh-style'
+    // 接管官方「引用文本」浮层：工具条在助手正文选区打开期间，压掉宿主的
+    // text-interaction 浮层（引用入口改由本工具条提供，位置沿用批注自己的定位）。
+    // 只动显示，不替换官方组件、不改 message-quotes 的注册与气泡渲染。
+    var ACTIVE_CLASS = 'dsh-ann-active'
+    var pendingOwn = false
+    var pendingOwnTimer = null
+    // 护栏状态：官方浮层结构不符合「单按钮」预期时永久放弃接管。
+    var takeoverBlocked = false
+    var verifyTimer = null
+    var surfaceShapeWarned = false
     if (document.getElementById(STYLE_ID) === null) {
       var style = document.createElement('style')
       style.id = STYLE_ID
@@ -315,6 +325,7 @@ window.__ModuleLoader__.load({
         '  font-family: var(--dsw-font-family, system-ui); font-size: 11px;',
         '  color: var(--dsw-alias-label-primary); white-space: nowrap; }',
         'body:has([role="dialog"][aria-modal="true"]) [data-annotation-overlay] { display: none; }',
+        'html.dsh-ann-active [data-text-interaction-surface] { visibility: hidden !important; }',
         '.dsh-ann-tip { animation: dsh-ann-pop .12s var(--ds-ease-in-out, ease); }',
         '@keyframes dsh-ann-fadein { from { opacity: 0; } to { opacity: 1; } }',
       ].join('\n')
@@ -332,6 +343,8 @@ window.__ModuleLoader__.load({
           already: '已批注',
           annotateTitle: '为选中的内容写一条批注',
           alreadyTitle: '这段内容已在批注清单中',
+          quote: '引用',
+          quoteTitle: '把选中的内容作为引用插入输入框',
         },
         edit: {
           addTitle: '添加批注',
@@ -353,6 +366,7 @@ window.__ModuleLoader__.load({
         },
         toast: {
           attachFail: '批注拼稿失败，消息将不带批注发送：',
+          quoteFail: '引用未能插入输入框（输入框可能正忙），请稍后重试',
           skipCommand: '本条是斜杠命令，未拼入批注；批注已保留，将随下一条消息发送',
           sendBlocked: '批注未能发出（附件可能还在上传），请稍后重试：',
           deleted: '已删除该批注',
@@ -372,6 +386,8 @@ window.__ModuleLoader__.load({
           already: 'Annotated',
           annotateTitle: 'Write a note about the selected text',
           alreadyTitle: 'This passage is already in your annotation list',
+          quote: 'Quote',
+          quoteTitle: 'Insert the selected text into the composer as a quote',
         },
         edit: {
           addTitle: 'Add annotation',
@@ -393,6 +409,7 @@ window.__ModuleLoader__.load({
         },
         toast: {
           attachFail: 'Failed to attach annotations; the message will be sent without them: ',
+          quoteFail: 'Could not insert the quote (the composer may be busy); try again',
           skipCommand: 'Slash command detected — annotations stay pending and will attach to your next message',
           sendBlocked: 'Annotation was not sent (an attachment may still be uploading); try again: ',
           deleted: 'Annotation deleted',
@@ -1071,6 +1088,24 @@ window.__ModuleLoader__.load({
       return s
     }
     var ICONS = {
+      // 引用图标：官方转录里那枚双引号（16x16，g 位移 6.8/2.4），保持视觉一致。
+      quote: function () {
+        var s = svg([], '0 0 16 16')
+        var g = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+        g.setAttribute('transform', 'translate(6.8 2.4)')
+        var ds = [
+          'M2.8125 0.583008L3.2002 1.16602C2.43912 1.6713 1.88491 2.41238 1.60547 3.25684H2.98926V6.70605H0V4.52148C1.96593e-05 2.70313 0.9109 1.00575 2.42578 0L2.8125 0.583008Z',
+          'M7.50781 0.583008L7.89551 1.16602C7.13443 1.6713 6.58022 2.41238 6.30078 3.25684H7.68457V6.70605H4.69531V4.52148C4.69533 2.70313 5.60621 1.00575 7.12109 0L7.50781 0.583008Z',
+        ]
+        for (var i = 0; i < ds.length; i++) {
+          var pp = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+          pp.setAttribute('d', ds[i])
+          pp.setAttribute('fill', 'currentColor')
+          g.appendChild(pp)
+        }
+        s.appendChild(g)
+        return s
+      },
       plus: function () {
         return svg(['M8.64453 1.5V7.34961H14.5V8.65039H8.64453V14.5H7.34473V8.65039H1.5V7.34961H7.34473V1.5H8.64453Z'], '0 0 16 16')
       },
@@ -1513,16 +1548,17 @@ window.__ModuleLoader__.load({
         if (ui.mode === 'actions' && key === ui.lastKey && text === ui.quote && rootEl === ui.selectionRoot
           && (ui.source && ui.source.sourceUrl) === (source && source.sourceUrl)) { clearSettle(); return }
         clearSettle()
+        ownSurfaceFor()
         settleTimer = setTimeout(function () {
           settleTimer = null
           if (ui.mode === 'editing' || ui.mode === 'composing') return
           var s = window.getSelection()
-          if (s === null || s.isCollapsed || selectionKey(s) !== key) return
+          if (s === null || s.isCollapsed || selectionKey(s) !== key) { releaseOwn(); return }
           var r = s.getRangeAt(0)
-          if (annotationRootOf(r.commonAncestorContainer) !== rootEl) return
+          if (annotationRootOf(r.commonAncestorContainer) !== rootEl) { releaseOwn(); return }
           var currentSource = documentSourceOf(r.commonAncestorContainer)
           if ((currentSource && currentSource.sourceUrl) !== (source && source.sourceUrl)
-            || (source !== null && source.sessionId !== currentSessionId())) return
+            || (source !== null && source.sessionId !== currentSessionId())) { releaseOwn(); return }
           var rect = r.getBoundingClientRect()
           if (rect.width === 0 || rect.height === 0) return
           var point = livePointer()
@@ -2167,6 +2203,103 @@ window.__ModuleLoader__.load({
         return b
       }
 
+      /** 宿主是否提供 insertQuote（DSH 0.2.2+ 才有）；旧版没有就不显示「引用」按钮。 */
+      var canQuoteCached = false
+      function canInsertQuote() {
+        if (canQuoteCached) return true
+        var shell = shellFor(scopeOfSession(currentSessionId()))
+        if (shell === null || typeof shell.insertQuote !== 'function') return false
+        canQuoteCached = true
+        return true
+      }
+
+      /** 工具条「引用文本」：走宿主公开的 SessionInput.insertQuote 插入原子引用节点。 */
+      function insertQuoteFromToolbar() {
+        var text = ui.quote
+        if (text === null || text === undefined || String(text).trim() === '') {
+          showToast(t('error.noSelection'))
+          return
+        }
+        var shell = shellFor(scopeOfSession(currentSessionId()))
+        if (shell === null || typeof shell.insertQuote !== 'function') {
+          showToast(t('toast.quoteFail'))
+          return
+        }
+        var inserted = false
+        try { inserted = shell.insertQuote(text) === true } catch (_) { inserted = false }
+        if (!inserted) {
+          showToast(t('toast.quoteFail'))
+          return
+        }
+        closeToolbar()
+        try {
+          var sel = window.getSelection()
+          if (sel !== null) sel.removeAllRanges()
+        } catch (_) {}
+      }
+
+      /** 放弃本次占位（选区已变 / 失效）：立即恢复官方浮层。 */
+      function releaseOwn() {
+        pendingOwn = false
+        if (pendingOwnTimer !== null) { clearTimeout(pendingOwnTimer); pendingOwnTimer = null }
+        syncSurfaceSuppression()
+      }
+
+      /** 压掉/恢复官方 text-interaction 浮层（只在批注占位期间）。 */
+      function syncSurfaceSuppression() {
+        try {
+          var root = document.documentElement
+          if (root === null || root.classList === undefined) return
+          // 自愈：曾因结构变化放弃接管，但浮层现在又回到单按钮结构 → 恢复接管，
+          // 避免一次误判（或官方临时 DOM 抖动）把接管永久关掉。
+          if (takeoverBlocked) {
+            var probe = document.querySelector('[data-text-interaction-surface]')
+            if (probe !== null && probe.querySelectorAll('button').length === 1) takeoverBlocked = false
+          }
+          if (takeoverBlocked || !(pendingOwn || ui.mode !== 'closed')) {
+            root.classList.remove(ACTIVE_CLASS)
+            return
+          }
+          root.classList.add(ACTIVE_CLASS)
+          // 护栏：官方浮层当前只承载「引用文本」一个按钮。若结构变了（新增复制/朗读、
+          // 包了 toolbar 容器等），立刻放弃接管、回退为两个控件并存，绝不静默吞掉新功能。
+          if (verifyTimer !== null) clearTimeout(verifyTimer)
+          verifyTimer = setTimeout(verifySurfaceShape, 60)
+        } catch (_) {}
+      }
+
+      /** 校验官方浮层里的动作按钮数量；多于一个说明官方新增了动作，放弃接管。 */
+      function verifySurfaceShape() {
+        verifyTimer = null
+        try {
+          var surface = document.querySelector('[data-text-interaction-surface]')
+          // 没有官方浮层（插件未装 / 被禁用 / 无消费者）时无需压制，也谈不上放弃。
+          if (surface === null) return
+          // 不假设 DOM 层级：官方组件外面可能包了一层容器，只数动作按钮。
+          var buttons = surface.querySelectorAll('button')
+          if (buttons.length <= 1) return
+          takeoverBlocked = true
+          var root = document.documentElement
+          if (root !== null && root.classList !== undefined) root.classList.remove(ACTIVE_CLASS)
+          if (!surfaceShapeWarned) {
+            surfaceShapeWarned = true
+            console.warn('[annotation] 官方 text-interaction 浮层出现 ' + buttons.length + ' 个动作按钮（children=' + surface.children.length + '），已放弃接管，回退为两个控件并存；结构：' + String(surface.innerHTML).slice(0, 240))
+          }
+        } catch (_) {}
+      }
+
+      /** 同步准入通过即占位：官方浮层在 pointerup 就渲染，等 250ms 定稿会闪一下。 */
+      function ownSurfaceFor() {
+        pendingOwn = true
+        if (pendingOwnTimer !== null) clearTimeout(pendingOwnTimer)
+        pendingOwnTimer = setTimeout(function () {
+          pendingOwnTimer = null
+          pendingOwn = false
+          syncSurfaceSuppression()
+        }, 800)
+        syncSurfaceSuppression()
+      }
+
       function render() {
         host.textContent = ''
         ui.el = null
@@ -2183,6 +2316,15 @@ window.__ModuleLoader__.load({
             already,
             enterEditing,
           ))
+          if (canInsertQuote()) {
+            bar.appendChild(ghostButton(
+              ICONS.quote,
+              t('actions.quote'),
+              t('actions.quoteTitle'),
+              false,
+              insertQuoteFromToolbar,
+            ))
+          }
           host.appendChild(bar)
           ui.el = bar
           // 指针定位要真实宽度才能水平居中；首帧用估算宽度会偏半个工具条，
@@ -2241,6 +2383,7 @@ window.__ModuleLoader__.load({
             }
           })
         }
+        syncSurfaceSuppression()
       }
 
       /** 共用输入框：圆角长条 + 右侧 ✓，固定宽度，输入超长自动换行/增高。 */
@@ -3137,7 +3280,11 @@ window.__ModuleLoader__.load({
       }
 
       function closeToolbar() {
-        if (ui.mode === 'closed') return
+        // 关闭即不再占位：先清占位与看门狗，再处理「已经关闭」的早退分支——
+        // 否则 onSelection 的「选区不在可批注区域」路径会把官方浮层多压 800ms。
+        pendingOwn = false
+        if (pendingOwnTimer !== null) { clearTimeout(pendingOwnTimer); pendingOwnTimer = null }
+        if (ui.mode === 'closed') { syncSurfaceSuppression(); return }
         clearSettle()
         ui.mode = 'closed'
         ui.error = null
@@ -3930,7 +4077,7 @@ window.__ModuleLoader__.load({
         updateChip()
         watchInputDraft()
         renderMarkers()
-      })
+      }, 500)
 
       watchInputDraft()
       kickDecorate()
@@ -3968,6 +4115,10 @@ window.__ModuleLoader__.load({
         chipLayer.remove()
         tipLayer.remove()
         markerLayer.remove()
+        try { document.documentElement.classList.remove(ACTIVE_CLASS) } catch (_) {}
+        if (pendingOwnTimer !== null) { clearTimeout(pendingOwnTimer); pendingOwnTimer = null }
+        if (verifyTimer !== null) { clearTimeout(verifyTimer); verifyTimer = null }
+        pendingOwn = false
         host.remove()
         overlay.remove()
         // 仅当自己仍是「当前实例」时才清场：旧实例被延迟 dispose 时（fiber 卸载
