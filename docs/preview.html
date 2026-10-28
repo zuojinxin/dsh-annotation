@@ -1,0 +1,675 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>dsh-annotation · 示意页（真实插件 · 虚构数据）</title>
+<!--
+  这个页面只做两件事：
+
+    1. 原样加载仓库根目录的真实 client.js（<script src="../client.js">），
+       用最小假实现补齐 window.__ModuleLoader__ 与 apply(ctx) 需要的服务；
+    2. 手工仿造插件赖以定位的宿主 DOM（data-chat-flow-kind / data-composer-card /
+       data-composer-input），把时间轴做成可寻址的 window.demoFrame(t)。
+
+  这里没有一行复刻插件行为的假 JS：工具条、编辑卡、高亮、编号角标、输入框旁的
+  「N 条批注」、气泡上的「批注 ×N」、回复里的 Annotation 芯片，全部由真实插件渲染。
+  会话名 / 项目名 / 用户全是虚构的，页面里没有任何真实路径或账号。
+-->
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; overflow: hidden;
+    background: #e9edf3; color: #0f1115;
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: rgba(47, 107, 255, .22); }
+
+  /* 插件读到的主题 token，取浅色主题默认值 */
+  :root {
+    --dsw-alias-bg-base: #ffffff;
+    --dsw-alias-bg-layer-1: #ffffff;
+    --dsw-alias-label-primary: #0f1115;
+    --dsw-alias-label-primary-foreground: #ffffff;
+    --dsw-alias-label-secondary: #61666b;
+    --dsw-alias-label-tertiary: #81858c;
+    --dsw-alias-border-l1: #0000001a;
+    --dsw-alias-border-strong: #00000024;
+    --dsw-alias-interactive-bg-hover: #2631480f;
+    --dsw-alias-text-accent: #2f6bff;
+    --dsw-alias-state-error-primary: #e5484d;
+    --dsw-alias-button-primary-fill: #0f1115;
+    --dsw-alias-button-primary-hover: #2b3038;
+    --dsw-shadow-lv2: 0 10px 28px rgba(15, 17, 21, .16), 0 2px 6px rgba(15, 17, 21, .08);
+    --dsw-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Microsoft YaHei", sans-serif;
+    --ds-ease-in-out: cubic-bezier(.4, 0, .2, 1);
+  }
+
+  .app { display: flex; width: 1280px; height: 760px; background: #fff; }
+
+  /* ---------------- 侧栏（宿主外壳） ---------------- */
+  .side {
+    width: 196px; flex: none; display: flex; flex-direction: column;
+    padding: 14px 10px 10px; background: #f7f9fc;
+    border-right: 1px solid var(--dsw-alias-border-l1);
+  }
+  .brand { display: flex; align-items: center; gap: 7px; padding: 0 6px 12px; }
+  .brand b { font-size: 14px; font-weight: 650; letter-spacing: -.2px; }
+  .brand span {
+    font-size: 9px; letter-spacing: .08em; color: var(--dsw-alias-label-tertiary);
+    border: 1px solid var(--dsw-alias-border-l1); border-radius: 4px; padding: 1px 4px;
+  }
+  .newchat {
+    display: flex; align-items: center; justify-content: center; height: 32px;
+    margin: 0 2px 14px; border: 1px solid var(--dsw-alias-border-l1);
+    border-radius: 8px; background: #fff; font-size: 12.5px; cursor: default;
+  }
+  .sect {
+    padding: 4px 8px 6px; font-size: 10.5px; font-weight: 600;
+    letter-spacing: .06em; color: var(--dsw-alias-label-tertiary);
+  }
+  .srow {
+    display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 8px;
+    border-radius: 8px; font-size: 13px; color: var(--dsw-alias-label-secondary);
+  }
+  .srow.on { background: #e6ecf7; color: var(--dsw-alias-label-primary); font-weight: 550; }
+  .grow { flex: 1 1 auto; }
+  .foot {
+    display: flex; align-items: center; gap: 8px; padding: 8px;
+    border-top: 1px solid var(--dsw-alias-border-l1);
+    font-size: 11.5px; color: var(--dsw-alias-label-tertiary);
+  }
+  .avatar { width: 22px; height: 22px; border-radius: 50%; background: #cfd6e0; flex: none; }
+
+  /* ---------------- 会话主列 ---------------- */
+  .main {
+    flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column;
+    background: #fbfcfe;
+  }
+  .head {
+    height: 54px; flex: none; display: flex; align-items: center;
+    justify-content: space-between; padding: 0 26px;
+    border-bottom: 1px solid var(--dsw-alias-border-l1); background: #fff;
+  }
+  .title { font-size: 14px; font-weight: 600; }
+  .tools { display: flex; align-items: center; gap: 6px; }
+  .chip {
+    padding: 3px 9px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 999px;
+    font-size: 10.5px; color: var(--dsw-alias-label-secondary); background: #fff;
+  }
+
+  /* 宿主消息流的两个契约：行容器带 data-chat-flow-kind；正文就是行内文本 */
+  .thread {
+    flex: 1 1 auto; min-height: 0; overflow: hidden;
+    display: flex; flex-direction: column; gap: 16px;
+    padding: 20px 26px 6px;
+  }
+  .msg { display: flex; flex-direction: column; gap: 5px; }
+  .who { display: flex; align-items: center; gap: 6px; font-size: 10.5px; letter-spacing: .04em; color: var(--dsw-alias-label-tertiary); }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: #9aa4b2; flex: none; }
+  .md { font-size: 14.5px; line-height: 1.8; white-space: pre-wrap; word-break: break-word; }
+  .md p { margin: 0 0 8px; }
+  .md p:last-child { margin-bottom: 0; }
+  .sel { }
+  .msg.u { align-items: flex-end; }
+  .msg.u .bubble {
+    max-width: 78%; padding: 9px 14px; border-radius: 14px 14px 4px 14px;
+    background: #e7eefc; font-size: 14px; line-height: 1.6;
+    white-space: pre-wrap; word-break: break-word;
+  }
+
+  /* 输入区：data-composer-card 里放 data-composer-input 可编辑区 + 发送按钮 */
+  .composer-wrap { flex: none; padding: 6px 26px 20px; }
+  .composer {
+    display: flex; align-items: flex-end; gap: 10px; min-height: 66px;
+    padding: 13px 12px 13px 16px; border: 1px solid var(--dsw-alias-border-l1);
+    border-radius: 16px; background: #fff; box-shadow: 0 2px 10px rgba(15, 17, 21, .05);
+  }
+  .input {
+    flex: 1 1 auto; min-height: 22px; max-height: 116px; overflow: auto;
+    font-size: 14.5px; line-height: 1.6; outline: none;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .input:empty::before { content: attr(data-placeholder); color: var(--dsw-alias-label-tertiary); }
+  .send {
+    width: 32px; height: 32px; flex: none; border: none; border-radius: 10px;
+    background: #0f1115; color: #fff; font-size: 14px;
+    display: grid; place-items: center; cursor: pointer;
+  }
+
+  /* ---------------- 解说栏（不是插件的一部分） ---------------- */
+  .narr {
+    width: 392px; flex: none; display: flex; flex-direction: column;
+    padding: 50px 36px 28px; background: #f4f6fa;
+    border-left: 1px solid var(--dsw-alias-border-l1);
+  }
+  .eyebrow { font-size: 10.5px; letter-spacing: .18em; color: var(--dsw-alias-label-tertiary); min-height: 15px; text-transform: uppercase; }
+  #headline { margin: 18px 0 0; font-size: 27px; font-weight: 680; letter-spacing: -.5px; line-height: 1.42; min-height: 78px; }
+  .hairline { width: 100%; max-width: 300px; height: 1px; margin: 12px 0 0; background: linear-gradient(90deg, #0f11152e, transparent); }
+  #details { margin: 18px 0 0; font-size: 14px; line-height: 1.9; color: var(--dsw-alias-label-secondary); min-height: 82px; }
+  .footnote { margin-top: auto; font-size: 11px; line-height: 1.75; color: var(--dsw-alias-label-tertiary); }
+
+  /* ---------------- 脚本光标 ----------------
+     纯装饰：位置与涟漪都由 window.demoFrame(t) 按演示时钟算出（不靠 CSS 动画，
+     所以同一个 t 两次渲染像素一致）。它自己从不派发任何事件。 */
+  #cursor {
+    position: fixed; left: 0; top: 0; z-index: 30; pointer-events: none;
+    width: 22px; height: 27px; opacity: 0; transform-origin: 3px 2px;
+    filter: drop-shadow(0 2px 3px #00000066);
+  }
+  #cursor[data-visible="true"] { opacity: 1; }
+  #cursor svg { display: block; width: 100%; height: 100%; }
+  #cursor #rip {
+    position: absolute; left: -9px; top: -9px; width: 22px; height: 22px;
+    border-radius: 50%; border: 2px solid #2f6bff; opacity: 0;
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <aside class="side">
+    <div class="brand"><b>示例项目 A</b><span>示意</span></div>
+    <div class="newchat">＋ 新对话</div>
+    <div class="sect">会话</div>
+    <div class="srow on">示例会话 B</div>
+    <div class="srow">示例会话 C</div>
+    <div class="srow">示例会话 D</div>
+    <div class="grow"></div>
+    <div class="foot"><span class="avatar"></span>示例用户</div>
+  </aside>
+
+  <main class="main">
+    <div class="head">
+      <div class="title">示例会话 B</div>
+      <div class="tools"><span class="chip">虚构数据</span><span class="chip">示意页</span></div>
+    </div>
+
+    <!-- 消息流：行容器的 data-chat-flow-kind 是插件定位助手行/用户行的唯一依据 -->
+    <div class="thread" data-chat-flow data-conversation-scroll id="thread">
+      <div class="msg a" data-chat-flow-kind="assistant-step">
+        <div class="who"><span class="dot"></span>助手</div>
+        <div class="md">
+          <p>批注插件的核心只有三步：<span class="sel" id="s1">先在助手正文里选区</span>，再写一条批注，最后把批注清单随下一条消息发给模型。</p>
+          <p><span class="sel" id="s2">批注可以留空</span>——只标记原文、不写评论也是合法用法，模型会按编号回应你圈出的每一处。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="composer-wrap">
+      <div class="composer" data-composer-card>
+        <div class="input" data-composer-input contenteditable="true"
+             data-placeholder="给示例会话 B 发消息"></div>
+        <button class="send" type="button" aria-label="发送消息">↑</button>
+      </div>
+    </div>
+  </main>
+
+  <aside class="narr">
+    <div class="eyebrow">DSH · ANNOTATION</div>
+    <h1 id="headline"></h1>
+    <div class="hairline"></div>
+    <p id="details"></p>
+    <div class="footnote">示意画面 · 运行真实 client.js · 会话名、项目名与账号均为虚构数据</div>
+  </aside>
+</div>
+
+<div id="cursor" aria-hidden="true" data-visible="false">
+  <div id="rip"></div>
+  <svg viewBox="0 0 22 27"><path d="M2.5 1.5v19l4.9-4.7 3.6 8.4 4-1.9-3.6-8.3h6.3z"
+    fill="#fff" stroke="#11151b" stroke-width="1.4" stroke-linejoin="round"/></svg>
+</div>
+
+<script>
+/* ---- 宿主模块注册表，缩到插件真正会调用的那一小块 ----
+   真实实现还管模块解析、版本与热重载；插件只调用 load({ id, factory })。 */
+window.__ModuleLoader__ = {
+  load(entry) {
+    window.__modules = window.__modules || {};
+    window.__modules[entry.id] = entry.factory(() => ({}));
+    return window.__modules[entry.id];
+  },
+};
+</script>
+
+<!-- 真实插件，原样注入；下面所有 .dsh-ann-* 元素都由它自己渲染 -->
+<script src="../client.js"></script>
+
+<script>
+'use strict';
+
+const $ = (sel, root) => (root || document).querySelector(sel);
+const $$ = (sel, root) => [...(root || document).querySelectorAll(sel)];
+
+/* ==================================================================
+   一、虚构数据
+   ================================================================== */
+const SESSION_ID = 'demo-session-b';
+const NOTE = '这里为什么必须先有 data-chat-flow-kind？';
+const QUESTION = '这两条约定里，哪一条最容易踩坑？';
+const REPLY = [
+  'Annotation 1：选区必须落在助手行内，落到输入框或插件自己的浮层上都会被忽略。',
+  'Annotation 2：批注留空时只标记原文，模型仍然按编号逐条回应。',
+  '两条约定里，第一条更容易踩坑：外壳少一个 data-chat-flow-kind，插件就彻底不生效，而且不报错。',
+].join('\n\n');
+
+/* ==================================================================
+   二、宿主侧最小实现：会话输入服务 + 提交
+   插件通过 conversation.input.for(scope) 拿到 shell，读 state.draft、
+   写 setDraft。宿主自己负责把草稿变成一条用户消息。
+   ================================================================== */
+const inputEl = $('[data-composer-input]');
+const thread = $('#thread');
+const draftState = { draft: '' };
+const draftSubs = new Set();
+
+function notifyDraft() {
+  for (const fn of [...draftSubs]) {
+    try { fn(draftState) } catch (err) { console.error(err) }
+  }
+}
+/* 宿主 setDraft：写状态 + 同步输入区 + 通知订阅者（插件靠它识别「草稿被清空」） */
+function setDraft(value) {
+  draftState.draft = value === undefined || value === null ? '' : String(value);
+  inputEl.textContent = draftState.draft;
+  notifyDraft();
+}
+const shell = {
+  state: {
+    getSnapshot: () => ({ draft: draftState.draft }),
+    subscribe: (fn) => {
+      draftSubs.add(fn);
+      return () => { draftSubs.delete(fn) };
+    },
+  },
+  setDraft,
+};
+
+/* 宿主提交：真实宿主在 keydown 冒泡阶段把草稿变成一条用户消息。
+   顺序很关键——先插入气泡（此时文本里还带着插件刚拼进去的批注块），
+   再把草稿清空：插件在自己的订阅回调里同步把批注块从气泡里摘掉并贴标签，
+   整段发生在同一个任务里，绘制前就完成，所以看不到批注块闪一下。 */
+function hostSubmit() {
+  const draft = draftState.draft;
+  if (draft.trim() === '') return;
+  const row = document.createElement('div');
+  row.className = 'msg u';
+  row.setAttribute('data-chat-flow-kind', 'user-message');
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  bubble.textContent = draft;
+  row.appendChild(bubble);
+  thread.appendChild(row);
+  setDraft('');
+}
+inputEl.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+  e.preventDefault();
+  hostSubmit();
+});
+$('.send').addEventListener('click', hostSubmit);
+
+/* ==================================================================
+   三、引导插件（与宿主同款调用）
+   ================================================================== */
+try { localStorage.removeItem('dsh.annotation.pending.v1.' + SESSION_ID) } catch (_) {}
+try { localStorage.setItem('dsh.sessions.current', JSON.stringify({ sessionId: SESSION_ID })) } catch (_) {}
+
+const ctx = {
+  sessions: { scope: () => ({ sessionId: SESSION_ID }) },
+  conversation: { input: { for: () => shell } },
+  locale: { getSnapshot: () => ({ active: 'zh' }), subscribe: () => () => {} },
+};
+const plugin = Object.values(window.__modules || {})[0];
+if (!plugin || typeof plugin.apply !== 'function') throw new Error('client.js 未注册模块');
+window.__dispose = plugin.apply(ctx);
+
+/* ==================================================================
+   四、脚本光标：位置与涟漪都由演示时钟算，不用 CSS 动画
+   ================================================================== */
+const cursor = $('#cursor');
+const rip = $('#rip');
+const arrow = cursor.querySelector('svg');
+const CUE = [];       /* { at, x, y } 光标关键帧 */
+const PRESS = [];     /* 按下的演示时刻 */
+
+const RIPPLE = 0.34;  /* 涟漪持续时间（秒） */
+
+function cueAt(at, x, y) {
+  CUE.push({ at, x, y });
+  CUE.sort((a, b) => a.at - b.at);
+}
+function cursorPos(t) {
+  if (CUE.length === 0) return { x: 0, y: 0 };
+  if (t <= CUE[0].at) return { x: CUE[0].x, y: CUE[0].y };
+  for (let i = 0; i < CUE.length - 1; i++) {
+    const a = CUE[i];
+    const b = CUE[i + 1];
+    if (t >= a.at && t <= b.at) {
+      const k = b.at === a.at ? 1 : (t - a.at) / (b.at - a.at);
+      const e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+      return { x: a.x + (b.x - a.x) * e, y: a.y + (b.y - a.y) * e };
+    }
+  }
+  const last = CUE[CUE.length - 1];
+  return { x: last.x, y: last.y };
+}
+function pointIn(el, fx, fy) {
+  const b = el.getBoundingClientRect();
+  return { x: b.left + b.width * fx, y: b.top + b.height * fy };
+}
+/* 让光标在 arriveAt 时刻落到元素上的某个相对位置（提前 GAP 秒出发） */
+const GAP = 0.18;
+function travel(el, arriveAt, fx, fy) {
+  const to = pointIn(el, fx === undefined ? 0.5 : fx, fy === undefined ? 0.5 : fy);
+  const from = cursorPos(Math.max(0, arriveAt - GAP));
+  cueAt(arriveAt - GAP, from.x, from.y);
+  cueAt(arriveAt, to.x, to.y);
+  return to;
+}
+function pressAt(t) { PRESS.push(t) }
+
+function pressProgress(t) {
+  for (const at of PRESS) {
+    const k = (t - at) / RIPPLE;
+    if (k >= 0 && k < 1) return k;
+  }
+  return null;
+}
+function updateCursor(t) {
+  const p = cursorPos(t);
+  cursor.dataset.visible = 'true';
+  cursor.style.transform = 'translate(' + (p.x - 3) + 'px, ' + (p.y - 2) + 'px)';
+  const k = pressProgress(t);
+  if (k === null) {
+    cursor.dataset.pressed = 'false';
+    rip.style.opacity = '0';
+    rip.style.transform = 'scale(.45)';
+    arrow.style.transform = 'scale(1)';
+    return;
+  }
+  cursor.dataset.pressed = 'true';
+  rip.style.opacity = String(0.8 * (1 - k));
+  rip.style.transform = 'scale(' + (0.45 + 1.5 * k) + ')';
+  arrow.style.transform = 'scale(' + (k < 0.3 ? 0.86 + 0.14 * (k / 0.3) : 1) + ')';
+}
+
+/* ==================================================================
+   五、真实派发的交互函数（光标只负责显示，从不派发事件）
+   ================================================================== */
+function selectText(el) {
+  if (document.activeElement && typeof document.activeElement.blur === 'function') {
+    document.activeElement.blur();
+  }
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  sel.addRange(range);          /* selectionchange 由浏览器真实派发 */
+}
+function click(el) { el.click() }
+function hover(el) { el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false })) }
+function unhover(el) { el.dispatchEvent(new MouseEvent('mouseleave', { bubbles: false })) }
+function pressEnter(el) {
+  el.dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+    bubbles: true, cancelable: true,
+  }));
+}
+function typeIntoCard(text) {
+  const ta = $('.dsh-ann-input');
+  if (ta === null) return;
+  ta.value = text;
+  ta.dispatchEvent(new InputEvent('input', { bubbles: true }));
+}
+function typeIntoComposer(text) {
+  draftState.draft = text;
+  inputEl.textContent = text;
+  notifyDraft();
+}
+
+/* 等待插件完成异步动作（250ms 选区定稿、500ms 芯片限流、hover 收起的宽限） */
+function waitFor(predicate, timeout) {
+  const limit = timeout === undefined ? 2500 : timeout;
+  return new Promise((resolve) => {
+    const started = performance.now();
+    const tick = () => {
+      let ok = false;
+      try { ok = predicate() === true } catch (_) { ok = false }
+      if (ok || performance.now() - started > limit) { resolve(ok); return }
+      setTimeout(tick, 16);
+    };
+    tick();
+  });
+}
+/* 等两帧，让插件里 rAF 的重排（卡片落位等）落到布局上 */
+function settle() {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve() } };
+    requestAnimationFrame(() => requestAnimationFrame(finish));
+    setTimeout(finish, 200);
+  });
+}
+
+/* ==================================================================
+   六、时间轴（秒）
+   ================================================================== */
+const replyRow = () => $$('[data-chat-flow-kind="assistant-step"]').pop();
+const barBtn = () => $('.dsh-ann-bar .dsh-ann-ghost');
+const okBtn = () => $('.dsh-ann-card button');
+const chipLayer = () => $('[data-annotation-chip]');
+const delBtn = () => $$('.dsh-ann-tip button').find((b) => b.title === '删除此批注');
+const replyChip = (n) => $$('[data-annotation-reply-chip]')[n - 1];
+
+const timeline = [
+  /* ---- 阶段 1：选中一句话，工具条浮现 ---- */
+  { at: 0.00, run: () => { const p = pointIn($('#s1'), 0.10, 0.5); cueAt(0, p.x, p.y); } },
+  { at: 0.30, run: () => travel($('#s1'), 0.50, 0.08, 0.5) },
+  { at: 0.55, run: () => pressAt(0.55) },
+  { at: 0.62, run: () => {
+      selectText($('#s1'));
+      return { wait: () => waitFor(() => $('.dsh-ann-bar') !== null) };
+    } },
+  { at: 0.72, run: () => travel($('#s1'), 0.90, 0.94, 0.5) },
+
+  /* ---- 阶段 2：点「批注」→ 编辑卡 → 写字 → 保存 ---- */
+  { at: 2.32, run: () => travel(barBtn(), 2.50) },
+  { at: 2.50, run: () => {
+      pressAt(2.50);
+      click(barBtn());
+      return { wait: waitFor(() => $('.dsh-ann-card') !== null).then(settle) };
+    } },
+  { at: 2.90, run: () => travel($('.dsh-ann-input'), 3.06) },
+  { at: 3.08, run: () => { pressAt(3.08); $('.dsh-ann-input').focus(); } },
+  { at: 4.05, run: () => travel(okBtn(), 4.23) },
+  { at: 4.25, run: () => {
+      pressAt(4.25);
+      click(okBtn());
+      return { wait: waitFor(() => $$('.dsh-ann-num').length === 1) };
+    } },
+
+  /* ---- 阶段 3：再选一句，批注留空也能保存 ---- */
+  { at: 4.90, run: () => travel($('#s2'), 5.08, 0.08, 0.5) },
+  { at: 5.10, run: () => {
+      pressAt(5.10);
+      selectText($('#s2'));
+      return { wait: () => waitFor(() => $('.dsh-ann-bar') !== null) };
+    } },
+  { at: 5.30, run: () => travel($('#s2'), 5.48, 0.94, 0.5) },
+  { at: 5.72, run: () => travel(barBtn(), 5.90) },
+  { at: 5.90, run: () => {
+      pressAt(5.90);
+      click(barBtn());
+      return { wait: waitFor(() => $('.dsh-ann-card') !== null).then(settle) };
+    } },
+  { at: 6.10, run: () => {
+      pressAt(6.10);
+      click(okBtn());   /* 输入框留空直接保存：只标记原文 */
+      return { wait: waitFor(() => $$('.dsh-ann-num').length === 2) };
+    } },
+
+  /* ---- 阶段 4：输入框旁的「2 条批注」，悬停展开清单 ---- */
+  { at: 6.75, run: () => travel(chipLayer(), 6.93, 0.4, 0.5) },
+  { at: 6.95, run: () => {
+      hover(chipLayer());
+      return { wait: waitFor(() => $('.dsh-ann-tip') !== null) };
+    } },
+  { at: 7.30, run: () => travel(delBtn(), 7.48) },
+  { at: 7.95, run: () => {
+      unhover(chipLayer());
+      return { wait: waitFor(() => $('.dsh-ann-tip') === null, 1500) };
+    } },
+
+  /* ---- 阶段 5：打字 + 回车，气泡里只有问题和一个标签 ---- */
+  { at: 8.10, run: () => { pressAt(8.10); click(inputEl); inputEl.focus(); } },
+  { at: 9.10, run: () => travel($('.send'), 9.28) },
+  { at: 9.30, run: () => {
+      pressAt(9.30);
+      pressEnter(inputEl);   /* 真实 keydown：插件在 capture 阶段拼稿，宿主在冒泡阶段提交 */
+      return { wait: waitFor(() => $('[data-annotation-bubble-tag]') !== null) };
+    } },
+
+  /* ---- 阶段 6：助手回复流式结束，Annotation 变芯片 ---- */
+  { at: 9.60, run: () => {
+      const row = document.createElement('div');
+      row.className = 'msg a';
+      row.setAttribute('data-chat-flow-kind', 'assistant-step');
+      row.setAttribute('data-streaming', '');   /* 流式期间插件不动这一行 */
+      row.innerHTML = '<div class="who"><span class="dot"></span>助手</div>'
+        + '<div class="md" data-stream-body></div>';
+      thread.appendChild(row);
+    } },
+  { at: 11.05, run: () => {
+      const row = replyRow();
+      row.removeAttribute('data-streaming');
+      $('[data-stream-body]', row).textContent = REPLY;
+      return { wait: waitFor(() => $$('[data-annotation-reply-chip]').length === 2, 3000) };
+    } },
+  { at: 11.30, run: () => travel(replyChip(1), 11.48) },
+  { at: 11.50, run: () => {
+      hover(replyChip(1));
+      return { wait: waitFor(() => $('.dsh-ann-tip') !== null) };
+    } },
+];
+
+/* 打字：按演示时钟算出当前应显示的前缀，逐帧同步（同一 t 结果相同） */
+const NOTE_FROM = 3.15, NOTE_TO = 3.95;
+const Q_FROM = 8.20, Q_TO = 8.85;
+function applyTyping(t) {
+  if (t >= NOTE_FROM && t <= 4.20) {
+    const k = Math.min(1, (t - NOTE_FROM) / (NOTE_TO - NOTE_FROM));
+    const text = NOTE.slice(0, Math.round(NOTE.length * k));
+    const ta = $('.dsh-ann-input');
+    if (ta !== null && ta.value !== text) typeIntoCard(text);
+  }
+  if (t >= Q_FROM && t <= 9.00) {
+    const k = Math.min(1, (t - Q_FROM) / (Q_TO - Q_FROM));
+    const text = QUESTION.slice(0, Math.round(QUESTION.length * k));
+    if (draftState.draft !== text) typeIntoComposer(text);
+  }
+  if (t >= 9.62 && t < 11.05) {
+    const row = replyRow();
+    const body = row && $('[data-stream-body]', row);
+    if (body !== null && body !== undefined) {
+      const k = Math.min(1, (t - 9.62) / (10.95 - 9.62));
+      const text = REPLY.slice(0, Math.round(REPLY.length * k));
+      if (body.textContent !== text) body.textContent = text;
+    }
+  }
+}
+
+/* ==================================================================
+   七、解说（4–6 段，每段一句短标题 + 一行说明）
+   ================================================================== */
+const NARRATION = [
+  { from: 0.0,  title: '选中一句话。',
+    text: '在助手正文里划一段，工具条就贴在选区上方：批注从选区开始。' },
+  { from: 2.0,  title: '写一条批注。',
+    text: '点「批注」弹出小卡片；不写字也能保存，那就只是把原文标出来。' },
+  { from: 4.6,  title: '编号自己往下排。',
+    text: '原文出现蓝色高亮和编号角标，跨消息、跨回合一直累积。' },
+  { from: 6.6,  title: '输入框旁有清单。',
+    text: '「2 条批注」悬停即展开，逐条可改可删，关掉标签就全部撤回。' },
+  { from: 8.0,  title: '气泡里看不到批注块。',
+    text: '回车后批注块被摘掉，只剩问题和一枚「批注 ×2」标签，绘制前就完成。' },
+  { from: 10.2, title: '回复按编号逐条对照。',
+    text: '流式结束后「Annotation N」变成可悬浮芯片，悬停就能看到原文。' },
+];
+function narrationAt(t) {
+  let current = NARRATION[0];
+  for (const item of NARRATION) if (t >= item.from) current = item;
+  return current;
+}
+function updateNarration(t) {
+  const item = narrationAt(t);
+  $('#headline').textContent = item.title;
+  $('#details').textContent = item.text;
+}
+
+/* ==================================================================
+   八、可寻址时间轴：window.demoFrame(t) → 断言用的状态快照
+   ================================================================== */
+function snapshot() {
+  const bar = $('.dsh-ann-bar');
+  const card = $('.dsh-ann-card');
+  const chip = $('[data-annotation-chip]');
+  const tip = $('.dsh-ann-tip');
+  const bubble = $('[data-chat-flow-kind="user-message"] .bubble');
+  const tag = $('[data-annotation-bubble-tag]');
+  const rows = $$('[data-chat-flow-kind="assistant-step"]');
+  const last = rows[rows.length - 1];
+  const sel = window.getSelection();
+  return {
+    bar: bar !== null,
+    barLabel: bar === null ? '' : bar.textContent.trim(),
+    card: card !== null,
+    note: card === null ? '' : (($('.dsh-ann-input') || {}).value || ''),
+    nums: $$('.dsh-ann-num').length,
+    hls: $$('.dsh-ann-hl').length,
+    chip: chip !== null && chip.style.display !== 'none' ? chip.textContent.trim() : '',
+    tip: tip === null ? '' : tip.textContent.replace(/\s+/g, ' ').trim(),
+    tag: tag === null ? '' : tag.textContent.trim(),
+    userText: bubble === null ? '' : bubble.textContent.trim(),
+    replyChips: $$('[data-annotation-reply-chip]').length,
+    replyText: last === undefined ? '' : last.textContent.replace(/\s+/g, ' ').trim(),
+    sel: sel === null || sel.isCollapsed ? '' : sel.toString().trim(),
+  };
+}
+
+window.demoFrame = async (t) => {
+  for (const step of timeline) {
+    if (step.run && t >= step.at && !step.done) {
+      step.done = true;
+      const out = step.run();
+      if (out && out.wait) await out.wait;
+    }
+  }
+  applyTyping(t);
+  updateCursor(t);
+  updateNarration(t);
+  return snapshot();
+};
+
+/* 在真实浏览器里反复检查时用：清空插件落盘状态、时间轴与光标轨迹 */
+window.demoReset = () => {
+  for (const step of timeline) delete step.done;
+  CUE.length = 0;
+  PRESS.length = 0;
+  try { localStorage.removeItem('dsh.annotation.pending.v1.' + SESSION_ID) } catch (_) {}
+};
+
+/* 光标起点：第一句的左侧，t=0 就位 */
+(function restCursor() {
+  const p = pointIn($('#s1'), 0.10, 0.5);
+  cueAt(0, p.x, p.y);
+})();
+
+updateNarration(0);
+window.__ready = true;
+</script>
+</body>
+</html>

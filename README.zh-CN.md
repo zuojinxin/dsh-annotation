@@ -6,10 +6,12 @@
 
 [![DSH](https://img.shields.io/badge/DSH-up%20to%200.2.1--rc.3-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness) [![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE) [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
 
+![选中一段文字，工具条浮现](./docs/screenshots/01-toolbar.png)
+
 ## 功能
 
 - **选中即批注**：选中助手正文（或工作区文件预览里的文字），工具条点「批注」写备注；留空也能保存，等于标出位置而不写意见。
-- **编号角标**：原文留下高亮与蓝色编号角标，滚动时跟随正文，靠近视口边缘自动避让。
+- **编号角标**：蓝色编号角标贴着原文，滚动时跟随正文、靠近视口边缘自动避让；悬停角标会点亮原文并显示这条批注。
 - **跨回合收集**：可以在任意多条消息、多个回合里持续追加批注，统一从 1 编号。
 - **待发标签**：输入框旁出现 `N 条批注`，悬停列出全部待发批注，可逐条删除。
 - **回车即发**：批注块与你输入的问题一起发出，模型拿到完整批注块。
@@ -33,6 +35,14 @@
    你的气泡：只有问题 + 标签，不含批注块原文
    模型回复：Annotation 1: … Annotation 2: …（可悬停芯片）
 ```
+
+![编号角标、输入框旁的待发清单、回复里的批注芯片](./docs/images/demo.gif)
+
+| 编号角标与待发清单 | 回复编号变可悬停芯片 |
+|---|---|
+| ![两条批注的角标与「2 条批注」清单](./docs/screenshots/02-markers.png) | ![回复里的 Annotation 芯片](./docs/screenshots/03-reply.png) |
+
+截图与动图都由 `docs/preview.html` 生成：它加载真实的 `client.js`，数据是虚构的——不含任何真实会话的标题、账号或工作区名。
 
 ## 安装
 

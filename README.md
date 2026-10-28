@@ -6,10 +6,12 @@ Select text in a DSH conversation or a workspace file preview, annotate it, and 
 
 [![DSH](https://img.shields.io/badge/DSH-up%20to%200.2.1--rc.3-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness) [![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE) [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
 
+![Selecting a passage brings up the annotation toolbar](./docs/screenshots/01-toolbar.png)
+
 ## What it does
 
 - **Annotate on selection** — select assistant text (or text in a workspace file preview), pick 批注 in the toolbar, write the note. Leaving it empty marks the passage without a comment.
-- **Numbered markers** — the passage gets a highlight and a blue index number that stays anchored while you scroll and dodges collisions.
+- **Numbered markers** — a blue index number anchors to the passage, stays put while you scroll and dodges collisions; hovering it lights the passage up and shows your note.
 - **Collect across turns** — annotations pile up from any number of messages and turns, numbered from 1.
 - **Pending tag** — a `N 条批注` tag next to the composer lists every pending annotation on hover and deletes them one by one.
 - **Send with Enter** — the annotation block goes out together with whatever you typed. The model receives the full block.
@@ -33,6 +35,14 @@ select text ──▶ toolbar 批注 ──▶ write or leave empty ──▶ hi
    your bubble:   only the question + the tag, no block text
    model reply:   Annotation 1: … Annotation 2: … (hoverable chips)
 ```
+
+![Numbered markers, the pending list beside the composer, and Annotation chips in the reply](./docs/images/demo.gif)
+
+| Numbered markers and the pending list | Numbered reply becomes hoverable chips |
+|---|---|
+| ![Two markers, the 2 条批注 tag and its list](./docs/screenshots/02-markers.png) | ![Reply with Annotation chips](./docs/screenshots/03-reply.png) |
+
+Screenshots and the animation come from `docs/preview.html`, which loads the real `client.js` against invented data — no session, account or workspace name from any real conversation.
 
 ## Install
 
@@ -58,6 +68,8 @@ npm test                  # jsdom unit tests
 node --check client.js    # the browser bundle is hand-written, not built
 node docs/render-demo.mjs # re-render the animation and screenshots (headless Edge + ffmpeg)
 ```
+
+`docs/preview.html` is the capture source: it injects `client.js` verbatim into a hand-made host shell and exposes the timeline as `window.demoFrame(t)`, so the render script can assert on what each frame shows instead of trusting the picture.
 
 The browser-level checks (`test/overlay-browser.mjs`, `test/sidebar-browser.mjs`) need a Playwright installation: point `PLAYWRIGHT_MODULE` at an existing `playwright-core/index.mjs`.
 
