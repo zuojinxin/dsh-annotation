@@ -1280,6 +1280,28 @@ window.__ModuleLoader__.load({
         return el instanceof HTMLElement && el.isContentEditable ? el : null
       }
 
+      /** Web 宿主（0.2.2-alpha.2）的提交跨了任务边界：setDraft 拼稿之后、宿主
+       *  清空草稿之前，输入框会把「批注块 + 正文」画出来闪一下；桌面端 Electron
+       *  宿主同帧完成，不闪。这里只把输入文字设为透明——布局不动、提交路径不动。
+       *  （不改走「自己 submit」：v1.4.26 记录过那样会把批注单独发成一条。） */
+      var composerMaskTimer = null
+      function isElectronHost() {
+        return typeof navigator !== 'undefined' && /Electron/i.test(navigator.userAgent || '')
+      }
+      function maskComposerForWeb() {
+        if (isElectronHost()) return
+        var el = composerInputEl()
+        if (el === null) return
+        el.style.color = 'transparent'
+        if (composerMaskTimer !== null) clearTimeout(composerMaskTimer)
+        composerMaskTimer = setTimeout(unmaskComposerForWeb, 600)
+      }
+      function unmaskComposerForWeb() {
+        if (composerMaskTimer !== null) { clearTimeout(composerMaskTimer); composerMaskTimer = null }
+        var el = composerInputEl()
+        if (el !== null) el.style.color = ''
+      }
+
       function domDraftText() {
         var el = composerInputEl()
         return el === null ? '' : (el.innerText || el.textContent || '')
@@ -2160,6 +2182,7 @@ window.__ModuleLoader__.load({
           var hasQuestion = draft.trim() !== ''
           if (rollbackDraft === null) rollbackDraft = draft
           shell.setDraft(buildBlock(hasQuestion) + (hasQuestion ? '\n' + draft : ''))
+          maskComposerForWeb()
           annotationAttached = true
           markFreshBubble()
           console.log('[annotation] 批注块已拼入草稿，由宿主的同一次提交与正文/附件一起发出（'
@@ -3154,6 +3177,7 @@ window.__ModuleLoader__.load({
             var block = buildBlock(hasQuestion)
             if (rollbackDraft === null) rollbackDraft = draft
             shell.setDraft(block + (hasQuestion ? '\n' + draft : ''))
+            maskComposerForWeb()
             annotationAttached = true
             markFreshBubble()
             console.log('[annotation] 批注块已拼入草稿，将与正文/附件同一条消息发出（'
@@ -3752,8 +3776,11 @@ window.__ModuleLoader__.load({
           // 先反解析（必须在隐藏之前），再动 DOM。注意传 row 而不是 row 本身当容器：
           // hideAnnotationBlock 会自己落到 [class*="bubble"] 上。
           var items = parseItemsFromBubble(row)
+          // 解析不出条目就不是批注块（正文里恰好提到「我批注了以下」也会被
+          // hasAnnotationBlock 命中），此时绝不能隐藏——否则用户正文被切掉一段。
+          if (items.length === 0) continue
           if (!hideAnnotationBlock(row)) continue
-          if (items.length > 0) attachBubbleTag(row, items)
+          attachBubbleTag(row, items)
         }
       }
 
@@ -4083,6 +4110,10 @@ window.__ModuleLoader__.load({
             var fromSend = false
             if (i === rows.length - 1 && pendingDeco.length > 0) { items = pendingDeco[0].items; fromSend = true }
             if (items === null || items.length === 0) { items = parseItemsFromBubble(el); fromSend = false }
+            // 解析不出条目就不是批注块（hasAnnotationBlock 只查「我批注了以下」这一句，
+            // 正文引用这句话就会误判），此时不隐藏也不贴标签——否则会切掉用户正文、
+            // 并贴出一个「批注 ×0」。
+            if (items.length === 0) continue
             if (!hideAnnotationBlock(el)) continue // 内容未渲染完 → 留给下轮（发送暂存数据不弹出）
             if (fromSend) pendingDeco.shift()
             attachBubbleTag(el, items)

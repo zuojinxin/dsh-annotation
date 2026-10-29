@@ -1,6 +1,6 @@
 {
   "name": "@zuojinxin/dsh-annotation",
-  "version": "1.6.2",
+  "version": "1.6.3",
   "type": "module",
   "description": "DSH selection-annotation plugin for chat messages and workspace file previews: select text, annotate (optional), press Enter to send the annotation block with your message — the model replies to each annotation by number, with hoverable chips in the reply.",
   "main": "lib/index.js",

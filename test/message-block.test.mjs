@@ -34,6 +34,9 @@ function harness(lang, draft, sourcePath) {
     // markFreshBubble）。它是 attachAndSend 的自由变量，harness 必须给桩，否则会抛
     // ReferenceError 被 try/catch 吞掉 → attachAndSend 变成返回 false。
     function markFreshBubble() {}
+    // v1.6.3：拼稿后把输入框文字设为透明（仅非 Electron 宿主生效，修「发送瞬间
+    // 看到批注原文」）。它是 attachAndSend 的自由变量，harness 必须给桩。
+    function maskComposerForWeb() {}
     // v1.4.26：attachAndSend 的正文改为经 resolveDraftText 从「服务态 + 输入区」两处取
     // （只读服务态会在输入区文字还没同步进去时把正文读丢，生成 headOnly 变体——正是
     // 「批注与正文分成两轮」的根因，见 client.js 的 resolveDraftText）。harness 按同样
