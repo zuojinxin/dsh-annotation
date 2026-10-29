@@ -3335,6 +3335,18 @@ window.__ModuleLoader__.load({
       var tipLayer = document.createElement('div')
       tipLayer.setAttribute('data-annotation-tip-layer', '')
       document.body.appendChild(tipLayer)
+      window.__dshAnnotationTip = tipLayer
+
+      /** 当前活着的 tip 面。
+       *  fiber 重建 / 热重载会换实例并 remove 旧 tipLayer，但旧实例贴过的
+       *  「批注 ×N」徽章与「Annotation N」芯片仍留在文档里，它们的 handler
+       *  闭包指向已摘除的旧面板 → 悬停静默无反应。统一走这里，任何存活实例
+       *  的面板都能服务旧徽章。 */
+      function liveTip() {
+        var t = window.__dshAnnotationTip
+        if (t !== undefined && t !== null && t.isConnected === true) return t
+        return tipLayer
+      }
       var observedComposer = null
       var composerObserver = typeof ResizeObserver === 'function'
         ? new ResizeObserver(onLayoutChange)
@@ -3343,7 +3355,14 @@ window.__ModuleLoader__.load({
       function updateChip() {
         if (ui.quotes.length === 0) {
           chipLayer.style.display = 'none'
-          tipLayer.textContent = ''
+          // 宿主滚动 / 尺寸抖动会高频走到这里（rc.3 上每几十毫秒一次）。tip 面是
+          // 三处共用的：只清「待发批注」自己的那块，别把消息徽章 / 回复芯片的
+          // 悬浮面板一起抹掉——否则面板活不过 120ms 的淡入动画，看起来就是
+          // 「悬停毫无反应」。
+          var tipNode = tipLayer.firstElementChild
+          var foreign = tipNode !== null
+            && (tipNode.__annotationTipOwner === 'bubble' || tipNode.__annotationTipOwner === 'chip')
+          if (!foreign) tipLayer.textContent = ''
           return
         }
         chipLayer.textContent = ''
@@ -3776,10 +3795,14 @@ window.__ModuleLoader__.load({
         tag.textContent = t('bubble.tag', { n: items.length })
         tag.style.cssText = 'margin:4px 0 0 4px;cursor:default;'
         ;(function (list) {
+          var tipBound = null
+          var tipOwned = null
           tag.addEventListener('mouseenter', function () {
-            tipLayer.textContent = ''
+            var surface = liveTip()
+            surface.textContent = ''
             var el = document.createElement('div')
             el.className = 'dsh-ann-tip'
+            el.__annotationTipOwner = 'bubble'
             el.style.cssText = 'position:fixed;z-index:1160;width:280px;max-width:min(320px,calc(100vw - 24px));max-height:calc(100vh - 16px);overflow-y:auto;padding:8px 10px;border-radius:12px;border:1px solid var(--dsh-ann-border,rgba(0,0,0,.12));background:var(--dsh-ann-surface,#2c2c2e);box-shadow:var(--dsw-shadow-lv2);font-family:var(--dsw-font-family,system-ui);font-size:12px;color:var(--dsw-alias-label-primary);'
             var head = document.createElement('div')
             head.style.cssText = 'font-weight:600;margin-bottom:2px;'
@@ -3788,7 +3811,8 @@ window.__ModuleLoader__.load({
             for (var i = 0; i < list.length; i++) {
               el.appendChild(buildQuoteItem(list[i], i, { plainText: true }))
             }
-            tipLayer.appendChild(el)
+            surface.appendChild(el)
+            tipOwned = el
             var r2 = tag.getBoundingClientRect()
             var w2 = 300
             var h2 = el.offsetHeight || 120
@@ -3798,21 +3822,32 @@ window.__ModuleLoader__.load({
             el.style.left = left + 'px'
             el.style.top = Math.max(8, top) + 'px'
             el.style.width = w2 + 'px'
+            // 面板可能在实例更替后换过：把 keep/hide 重新挂到当前面板，
+            // 并撤掉挂在旧面板上的那一对（旧面板已摘除，否则 tip 永不隐藏）。
+            if (tipBound !== surface) {
+              if (tipBound !== null) {
+                tipBound.removeEventListener('mouseenter', bubbleKeep)
+                tipBound.removeEventListener('mouseleave', bubbleHide)
+              }
+              surface.addEventListener('mouseenter', bubbleKeep)
+              surface.addEventListener('mouseleave', bubbleHide)
+              tipBound = surface
+            }
           })
           var bubbleGrace = null
           function bubbleHide() {
             if (bubbleGrace !== null) clearTimeout(bubbleGrace)
             bubbleGrace = setTimeout(function () {
               bubbleGrace = null
-              tipLayer.textContent = ''
+              // 只清自己放进去的那块：宽限期内别的徽章可能已经接管同一面板。
+              var s = liveTip()
+              if (tipOwned !== null && s.firstElementChild === tipOwned) s.textContent = ''
             }, HOVER_HIDE_DELAY)
           }
           function bubbleKeep() {
             if (bubbleGrace !== null) { clearTimeout(bubbleGrace); bubbleGrace = null }
           }
           tag.addEventListener('mouseleave', bubbleHide)
-          tipLayer.addEventListener('mouseenter', bubbleKeep)
-          tipLayer.addEventListener('mouseleave', bubbleHide)
         })(items)
         tag.__annotationItems = items
         bubble.appendChild(tag)
@@ -3933,17 +3968,25 @@ window.__ModuleLoader__.load({
         chip.textContent = 'Annotation ' + num
         var item = items[num - 1]
         var grace = null
+        var tipBound = null
+        var tipOwned = null
         function hide() {
           if (grace !== null) clearTimeout(grace)
-          grace = setTimeout(function () { grace = null; tipLayer.textContent = '' }, HOVER_HIDE_DELAY)
+          grace = setTimeout(function () {
+            grace = null
+            var s = liveTip()
+            if (tipOwned !== null && s.firstElementChild === tipOwned) s.textContent = ''
+          }, HOVER_HIDE_DELAY)
         }
         function keep() {
           if (grace !== null) { clearTimeout(grace); grace = null }
         }
         chip.addEventListener('mouseenter', function () {
-          tipLayer.textContent = ''
+          var surface = liveTip()
+          surface.textContent = ''
           var el = document.createElement('div')
           el.className = 'dsh-ann-tip'
+          el.__annotationTipOwner = 'chip'
           el.style.cssText = 'position:fixed;z-index:1160;width:320px;max-width:calc(100vw - 16px);padding:10px 12px;border-radius:12px;border:1px solid var(--dsh-ann-border,rgba(0,0,0,.12));background:var(--dsh-ann-surface,#2c2c2e);box-shadow:var(--dsw-shadow-lv2);font-family:var(--dsw-font-family,system-ui);font-size:12px;color:var(--dsw-alias-label-primary);'
           var head = document.createElement('div')
           head.style.cssText = 'font-weight:600;margin-bottom:6px;'
@@ -3966,7 +4009,8 @@ window.__ModuleLoader__.load({
             none.textContent = t('reply.missing')
             el.appendChild(none)
           }
-          tipLayer.appendChild(el)
+          surface.appendChild(el)
+          tipOwned = el
           var r2 = chip.getBoundingClientRect()
           var w2 = 320
           var h2 = el.offsetHeight || 100
@@ -3976,10 +4020,17 @@ window.__ModuleLoader__.load({
           el.style.left = left + 'px'
           el.style.top = Math.max(8, top) + 'px'
           el.style.width = w2 + 'px'
+          if (tipBound !== surface) {
+            if (tipBound !== null) {
+              tipBound.removeEventListener('mouseenter', keep)
+              tipBound.removeEventListener('mouseleave', hide)
+            }
+            surface.addEventListener('mouseenter', keep)
+            surface.addEventListener('mouseleave', hide)
+            tipBound = surface
+          }
         })
         chip.addEventListener('mouseleave', hide)
-        tipLayer.addEventListener('mouseenter', keep)
-        tipLayer.addEventListener('mouseleave', hide)
         return chip
       }
 
@@ -4114,6 +4165,8 @@ window.__ModuleLoader__.load({
         if (decoTimer !== null) { clearInterval(decoTimer); decoTimer = null }
         if (composerObserver !== null) composerObserver.disconnect()
         chipLayer.remove()
+        // 仅在仍指向本实例面板时清全局指针：新实例可能已接管（延迟 dispose）。
+        if (window.__dshAnnotationTip === tipLayer) window.__dshAnnotationTip = null
         tipLayer.remove()
         markerLayer.remove()
         try { document.documentElement.classList.remove(ACTIVE_CLASS) } catch (_) {}
