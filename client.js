@@ -3851,16 +3851,26 @@ window.__ModuleLoader__.load({
         })(items)
         tag.__annotationItems = items
         bubble.appendChild(tag)
+        // 虚拟化会把用户行连同徽章一起卸载，芯片不能再依赖「DOM 里前一条带徽章
+        // 的行」。按 turn 留一份：行被宿主重建后还能把徽章贴回去，芯片也拿得到
+        // 数据（两端实测：100 个 flow-kind 行里只有 6 个 user，徽章数为 0）。
+        var turnKey = row.getAttribute('data-chat-turn')
+        if (turnKey !== null && items.length > 0) turnItems.set(turnKey, items)
         console.log('[annotation] 气泡已贴批注标签 ×' + items.length)
       }
 
       /** 发送完成时暂存批注数据（供气泡 hover 面板使用）。 */
       var pendingDeco = []
 
+      /** turn 号 → 该轮用户消息的批注条目（内存态；会话切换时清空）。 */
+      var turnItems = new Map()
+
       // ---------- 助手回复中的「Annotation N：」→ 悬浮批注芯片 ----------
 
-      /** 找到该回复行之前最近一条携带批注标签的用户消息的条目数据。 */
+      /** 找到该回复行的批注条目：先按 turn 命中缓存，再回退到「往回找徽章」。 */
       function findPrevAnnotationItems(row) {
+        var cached = turnItems.get(row.getAttribute('data-chat-turn'))
+        if (cached !== undefined && cached.length > 0) return cached
         var rows = allMessageRows()
         var idx = rows.indexOf(row)
         if (idx === -1) return null
@@ -3913,51 +3923,62 @@ window.__ModuleLoader__.load({
           if (el.querySelector('[data-annotation-reply-chip]') !== null) continue
           if ((el.textContent || '').indexOf('Annotation') === -1) continue
           var items = findPrevAnnotationItems(el)
-          if (items === null || items.length === 0) {
-            // 拿不到条目数据也照样生成芯片（hover 显示占位），并一次性提示。
-            items = []
-            markRowDiag(el, '未找到批注条目数据，芯片将显示占位内容（可继续用）')
-          }
+          // 条目数据没就绪就等下一轮：decorateAll 每秒轮询，用户行的徽章贴上来
+          // 之后缓存就有了。先占位生成芯片会让它永久停在占位——已有芯片的行
+          // 会被上面的守卫跳过，再也不会重新装饰（重启后第一屏就是这样坏的）。
+          if (items === null || items.length === 0) continue
           decorateAnnotationLabels(el, items)
         }
       }
 
-      /** 在行内所有文本节点中找「Annotation N：」（不区分大小写），替换为芯片。 */
+      /** 把 row 的 textContent 字符偏移换算成「文本节点 + 节点内偏移」。 */
+      function textOffsetToNode(root, offset) {
+        var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+        var acc = 0
+        var n
+        while ((n = walker.nextNode()) !== null) {
+          var len = (n.nodeValue || '').length
+          if (offset <= acc + len) return { node: n, offset: offset - acc }
+          acc += len
+        }
+        return null
+      }
+
+      /** 在行内找「Annotation N：」（不区分大小写），替换为芯片。
+       *  按 textContent 的字符偏移定位、用 Range 跨节点替换：宿主会把
+       *  「Annotation 1：」拆成「Annotation 1」+「：」两个文本节点（实测
+       *  文本节点里出现过孤立的 "Annotation 1"），逐节点跑正则必然漏掉。
+       *  返回实际生成的芯片数。 */
       function decorateAnnotationLabels(row, items) {
         var re = /Annotation[\s\u200b\u200c\u200d\u00ad]*(\d+)[\s\u200b\u200c\u200d\u00ad]*[:：]/gi
-        // 先快照所有文本节点，再逐个处理：遍历中途修改树会让 TreeWalker
-        // 指针失效（处理完第一个节点后遍历就断了）——这是「只有第一个
-        // Annotation 变成芯片」的根因。
-        var nodes = []
-        var walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT)
-        var n
-        while ((n = walker.nextNode()) !== null) nodes.push(n)
+        var text = row.textContent || ''
+        var matches = []
+        var m
+        re.lastIndex = 0
+        while ((m = re.exec(text)) !== null) {
+          matches.push({ start: m.index, end: m.index + m[0].length, num: parseInt(m[1], 10) })
+        }
+        if (matches.length === 0) return 0
         var done = 0
-        for (var i = 0; i < nodes.length; i++) {
-          n = nodes[i]
-          if (n.parentNode === null) continue
-          var v = n.nodeValue || ''
-          re.lastIndex = 0
-          if (!re.test(v)) continue
-          var frag = document.createDocumentFragment()
-          var last = 0
-          re.lastIndex = 0
-          var m
-          while ((m = re.exec(v)) !== null) {
-            if (m.index > last) frag.appendChild(document.createTextNode(v.slice(last, m.index)))
-            frag.appendChild(makeReplyChip(parseInt(m[1], 10), items))
-            last = m.index + m[0].length
+        // 从后往前替换：每替换一次都会让前面匹配的字符偏移失效。
+        for (var i = matches.length - 1; i >= 0; i--) {
+          var mt = matches[i]
+          var head = textOffsetToNode(row, mt.start)
+          var tail = textOffsetToNode(row, mt.end)
+          if (head === null || tail === null) continue
+          try {
+            var range = document.createRange()
+            range.setStart(head.node, head.offset)
+            range.setEnd(tail.node, tail.offset)
+            range.deleteContents()
+            range.insertNode(makeReplyChip(mt.num, items))
             done++
-          }
-          if (last < v.length) frag.appendChild(document.createTextNode(v.slice(last)))
-          n.parentNode.replaceChild(frag, n)
+          } catch (_) { /* 结构异常（跨了不该跨的元素）就跳过这一条 */ }
         }
         if (done > 0) {
           console.log('[annotation] 回复批注芯片 ×' + done, row.querySelectorAll('[data-annotation-reply-chip]').length + ' 个元素')
-        } else {
-          // 行内含 Annotation 但一个都没匹配上 → 文本节点里没有完整「Annotation N：」模式
-          markRowDiag(row, '行内含 Annotation 但未匹配到「Annotation N：」模式')
         }
+        return done
       }
 
       /** 构造「Annotation N」芯片（hover 显示该批注的原文与批注内容）。 */
@@ -4047,6 +4068,14 @@ window.__ModuleLoader__.load({
             var el = rows[i]
             if (el.hasAttribute('data-pending-steering')) continue
             if (el.querySelector('[data-annotation-bubble-tag]') !== null) continue
+            // 徽章在宿主重渲染时被清掉、批注块又已隐藏 → hasAnnotationBlock 永远
+            // 为 false，正常路径再也贴不回去。这条恢复路径按 turn 缓存补一次。
+            var cachedTurn = el.getAttribute('data-chat-turn')
+            if (el.getAttribute('data-chat-flow-kind') === 'user'
+              && cachedTurn !== null && turnItems.has(cachedTurn)) {
+              attachBubbleTag(el, turnItems.get(cachedTurn))
+              continue
+            }
             var b = el.querySelector('[class*="bubble"]')
             if (b === null || !hasAnnotationBlock(b.textContent || '')) continue
             // 最新一条优先消费发送时暂存的数据；其余从气泡文本反解析（须在隐藏前）。
@@ -4124,6 +4153,7 @@ window.__ModuleLoader__.load({
         // 旧会话未消费的发送暂存作废：留着会被新会话的历史消息误消费（错贴标签）；
         // 旧会话那条消息回切后会由气泡反解析路径重新装饰。
         pendingDeco.length = 0
+        turnItems.clear()
         ui.noteDraft = ''
         tipLayer.textContent = ''
         updateChip()
