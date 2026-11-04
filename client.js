@@ -4318,7 +4318,14 @@ window.__ModuleLoader__.load({
           if (b.closest('[contenteditable="true"], textarea, input') !== null) continue
           if (b.closest('[data-chat-flow-kind]') !== null) continue
           if (!hasAnnotationBlock(b.textContent || '')) continue
-          hideAnnotationBlock(b, b)
+          // 先反解析再切（切完就解析不出来了）。切完把「批注 ×N」贴回这颗气泡，
+          // 否则纯批注消息会被切成一个空气泡（用户实测：既没正文也没徽章）。
+          var items = parseItemsFromBubble(b)
+          if (items.length === 0 && !looksLikeOwnBlock(b.textContent || '')) continue
+          if (!hideAnnotationBlock(b, b)) continue
+          if (items.length > 0 && b.querySelector('[data-annotation-bubble-tag]') === null) {
+            attachBubbleTag(b, items)
+          }
         }
       }
 
@@ -4673,7 +4680,7 @@ window.__ModuleLoader__.load({
             // 徽章在宿主重渲染时被清掉、批注块又已隐藏 → hasAnnotationBlock 永远
             // 为 false，正常路径再也贴不回去。这条恢复路径按 turn 缓存补一次。
             var cachedTurn = el.getAttribute('data-chat-turn')
-            if (el.getAttribute('data-chat-flow-kind') === 'user'
+            if (isUserKind(el.getAttribute('data-chat-flow-kind'))
               && cachedTurn !== null && turnItems.has(cachedTurn) && !blockVisible) {
               attachBubbleTag(el, turnItems.get(cachedTurn))
               continue
@@ -4683,7 +4690,7 @@ window.__ModuleLoader__.load({
             // 或者宿主重渲染把块丢了：这时块不可见，但发送时暂存的条目还在——
             // 给最新一行补上「批注 ×N」标签，否则用户看到的是「干净但没标签」。
             if (!blockVisible && i === rows.length - 1 && pendingDeco.length > 0
-              && el.getAttribute('data-chat-flow-kind') === 'user'
+              && isUserKind(el.getAttribute('data-chat-flow-kind'))
               && el.querySelector('[data-annotation-bubble-tag]') === null) {
               attachBubbleTag(el, pendingDeco[0].items)
               pendingDeco.shift()
