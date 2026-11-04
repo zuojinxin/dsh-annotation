@@ -239,12 +239,7 @@ test('拼稿后的草稿一定同时含批注块与用户正文（同一条消�
   assert.ok(fn, 'client.js should define attachAndSend')
   const body = fn[0]
   assert.ok(body.includes('resolveDraftText(shell)'), 'must resolve the draft from both channels')
-  assert.ok(body.includes('draftPayloadFor('), 'must build the splice payload from the resolved draft')
-  // v1.7.2：拼接表达式搬到 draftPayloadFor（同一处代码同时负责保住引用芯片），
-  // 保证不变：块在前、用户正文在后，两者同一条消息。
-  const payload = source.match(/function draftPayloadFor\(shell, block, hasQuestion\) \{[\s\S]*?\n      \}/)
-  assert.ok(payload, 'client.js should define draftPayloadFor')
-  assert.ok(payload[0].includes("hasQuestion ? '\\n' + draftText : ''"),
+  assert.ok(body.includes("hasQuestion ? '\\n' + draft : ''"),
     'must append the user text after the block so both ride one message')
   assert.ok(body.includes('rollbackDraft = draft'), 'must keep the pre-splice draft for rollback')
 })
