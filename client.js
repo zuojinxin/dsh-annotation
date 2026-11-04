@@ -4307,6 +4307,21 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /** 兜底清场：不在消息流里的气泡（排队消息、待发插话、队列 dock 预览）也要
+       *  把批注块切掉。decorateAll 只认 [data-chat-flow-kind] 行，而排队中的消息
+       *  没有这个包裹层——用户实测「排队消息发出去后气泡里露出整段批注块」就是
+       *  这条路径漏掉的。只切块、不贴标签（这些节点没有稳定的行可挂）。 */
+      function hideStrayBubbleBlocks() {
+        var bubbles = document.querySelectorAll('[data-message-bubble], [class*="bubble"]')
+        for (var i = 0; i < bubbles.length; i++) {
+          var b = bubbles[i]
+          if (b.closest('[contenteditable="true"], textarea, input') !== null) continue
+          if (b.closest('[data-chat-flow-kind]') !== null) continue
+          if (!hasAnnotationBlock(b.textContent || '')) continue
+          hideAnnotationBlock(b, b)
+        }
+      }
+
       /** 从气泡文本反解析批注条目（用于刷新后旧消息的 hover 内容）。 */
       function parseItemsFromBubble(row) {
         try {
@@ -4426,6 +4441,21 @@ window.__ModuleLoader__.load({
       function shouldSkipRow(bodyText, hasTag) {
         if (hasAnnotationBlock(bodyText || '')) return false
         return hasTag === true
+      }
+
+      /** 文本里是否同时出现「块头 + 尾部指令」两段固定文案（zh/en 任一）。
+       *  这两句只由本插件生成，用户正文同时原样出现它们的概率可忽略——所以即使
+       *  条目解析失败，也能确认「这就是我方写的块」，可以放心切掉。 */
+      function looksLikeOwnBlock(text) {
+        if (typeof text !== 'string' || text === '') return false
+        var langs = ['zh', 'en']
+        for (var i = 0; i < langs.length; i++) {
+          var head = dictVal(langs[i], 'block.headOnly')
+          var tail = dictVal(langs[i], 'block.formatOnly')
+          if (head !== '' && tail !== ''
+            && text.indexOf(head) !== -1 && text.indexOf(tail) !== -1) return true
+        }
+        return false
       }
 
       /** turn 号 → 该轮用户消息的批注条目（内存态；会话切换时清空）。 */
@@ -4629,6 +4659,7 @@ window.__ModuleLoader__.load({
           // 启动之后才被别的实例塞进来的，也会在一个周期内收敛回单份。
           sweepStrayLayers()
           hideDockEchoBlocks()
+          hideStrayBubbleBlocks()
           var rows = allMessageRows()
           for (var i = rows.length - 1; i >= 0; i--) {
             var el = rows[i]
@@ -4657,7 +4688,15 @@ window.__ModuleLoader__.load({
             // 解析不出条目就不是批注块（hasAnnotationBlock 只查「我批注了以下」这一句，
             // 正文引用这句话就会误判），此时不隐藏也不贴标签——否则会切掉用户正文、
             // 并贴出一个「批注 ×0」。
-            if (items.length === 0) continue
+            if (items.length === 0) {
+              // 例外：块头与尾部指令两段固定文案同时命中 = 确定是我方生成的块
+              // （用户实测：块永久露在气泡里，就是因为这里直接 continue）。照切，
+              // 只是贴不出条目 tooltip。
+              if (!looksLikeOwnBlock(b.textContent || '')) continue
+              if (!hideAnnotationBlock(el)) continue
+              if (fromSend) pendingDeco.shift()
+              continue
+            }
             if (!hideAnnotationBlock(el)) continue // 内容未渲染完 → 留给下轮（发送暂存数据不弹出）
             if (fromSend) pendingDeco.shift()
             attachBubbleTag(el, items)

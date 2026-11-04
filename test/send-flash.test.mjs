@@ -44,9 +44,12 @@ test('两条拼稿路径 setDraft 之后都调用遮罩', () => {
 })
 
 test('解析不出条目就不隐藏、不贴标签（避免「批注 ×0」和正文被切）', () => {
-  for (const name of ['decorateAll', 'hideDockEchoBlocks']) {
-    assert.match(body(name), /if \(items\.length === 0\) continue/, `${name} 要提前跳过`)
-  }
-  assert.doesNotMatch(body('hideDockEchoBlocks'), /if \(items\.length > 0\) attachBubbleTag/,
-    'hideDockEchoBlocks 不应再「解析失败也隐藏」')
+  // v1.8.1：只有「块头 + 尾部指令」两段固定文案同时命中（确定是我方生成的块），
+  // 才允许在条目解析失败时仍然切掉——否则原文会永久露在气泡里（用户实测）。
+  const d = body('decorateAll')
+  assert.match(d, /looksLikeOwnBlock/, 'decorateAll 要能识别我方生成的块')
+  assert.match(d, /if \(!looksLikeOwnBlock\(b\.textContent \|\| ''\)\) continue/,
+    'decorateAll 对「只是提到这句话」的正文仍要跳过')
+  assert.match(body('hideDockEchoBlocks'), /if \(items\.length === 0\) continue/,
+    'hideDockEchoBlocks 保持严格跳过')
 })
