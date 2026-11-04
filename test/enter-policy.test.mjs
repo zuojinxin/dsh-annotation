@@ -7,9 +7,12 @@ const match = source.match(/function shouldAttachForEnter\(e, draft\) \{[\s\S]*?
 assert.ok(match, 'client.js should define shouldAttachForEnter')
 const shouldAttachForEnter = Function(`return (${match[0]})`)()
 
-const cmdMatch = source.match(/function isCommandDraft\(draft\) \{[\s\S]*?\n      \}/)
+const cmdMatch = source.match(/function isCommandDraft\(draft, shell\) \{[\s\S]*?\n      \}/)
 assert.ok(cmdMatch, 'client.js should define isCommandDraft')
-const isCommandDraft = Function(`return (${cmdMatch[0]})`)()
+const commandNameOf = Function(`return (${source.match(/function commandNameOf\(draft\) \{[\s\S]*?\n      \}/)[0]})`)()
+// 目录不可用 → 保守按命令处理；技能 token 的放行由 skill-chip.test.mjs 覆盖。
+const isCommandDraft = Function('commandNameOf', 'inputSnapshotOf', 'leadingTokenIsChip', 'ctx', 'currentSessionId',
+  `return (${cmdMatch[0]})`)(commandNameOf, () => null, () => false, { get: () => null }, () => 's1')
 
 test('快捷回车只接管空草稿的纯批注', () => {
   assert.equal(shouldAttachForEnter({ ctrlKey: true, metaKey: false }, ''), true)

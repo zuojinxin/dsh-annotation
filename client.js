@@ -355,7 +355,7 @@ window.__ModuleLoader__.load({
         },
         common: { cancel: '取消' },
         error: { noSelection: '没有选中的内容' },
-        chip: { count: '条批注' },
+        chip: { count: '条批注', send: '发送批注' },
         tip: { title: '批注（{n} 条）', quoteLabel: '所选文本：', notePrefix: '用户评论：', emptyNote: '（无批注内容）', del: '删' },
         bubble: { tag: '批注 ×{n}', title: '本消息携带批注（{n} 条）' },
         reply: {
@@ -403,7 +403,7 @@ window.__ModuleLoader__.load({
         },
         common: { cancel: 'Cancel' },
         error: { noSelection: 'No text selected' },
-        chip: { count: ' annotation(s)' },
+        chip: { count: ' annotation(s)', send: 'Send annotations' },
         tip: { title: 'Annotations ({n})', quoteLabel: 'Quoted text: ', notePrefix: 'User comment: ', emptyNote: '(no note)', del: 'Del' },
         bubble: { tag: 'Annotations ×{n}', title: 'This message carries {n} annotation(s)' },
         reply: {
@@ -431,6 +431,15 @@ window.__ModuleLoader__.load({
           sourceUser: 'Source: my earlier message (not your reply)',
         },
       },
+    }
+    // 正常运行不刷屏：console 只留 warn / error。要排查时在 DevTools 里执行
+    //   localStorage.setItem('dsh.annotation.debug', '1')
+    // 再刷新，全部诊断日志会回来（关掉：removeItem 同名键）。
+    var DEBUG_LOG = false
+    try { DEBUG_LOG = localStorage.getItem('dsh.annotation.debug') === '1' } catch (_) {}
+    function dlog() {
+      if (!DEBUG_LOG) return
+      try { console.log.apply(console, arguments) } catch (_) {}
     }
     var currentLang = 'zh'
     function setLang(id) {
@@ -575,7 +584,7 @@ window.__ModuleLoader__.load({
       userRowSeen = true
       try {
         var d = gateDiagnose()
-        if (d !== null) console.log('[annotation] 首次用户行批注，环境快照 ' + JSON.stringify(d))
+        if (d !== null) dlog('[annotation] 首次用户行批注，环境快照 ' + JSON.stringify(d))
       } catch (_) {}
     }
 
@@ -1673,6 +1682,7 @@ window.__ModuleLoader__.load({
       }
 
       function onSelection() {
+        warmCommandCatalog()
         if (ui.mode !== 'closed' && host.childNodes.length === 0) {
           ui.mode = 'closed'
           ui.lastKey = ''
@@ -2120,6 +2130,9 @@ window.__ModuleLoader__.load({
       // v1.4.21 改为：有批注待发送且草稿为空时主动摘掉 disabled（视觉与功能一致地变为
       // 可用），并在 capture 阶段接管 click，走插件自己的纯批注提交路径。
       var sendBtnState = { el: null }
+      // 上次看到的「宿主有没有普通发送按钮」：运行开始/结束会翻转，胶囊上的
+      // 显式发送键要跟着出现/消失（否则要么发不出去，要么多一个重复入口）。
+      var lastSendAvailable = null
 
       /** composer 的草稿文本是否为空（服务不可用时也能读）。 */
       function draftIsEmpty() {
@@ -2194,6 +2207,24 @@ window.__ModuleLoader__.load({
         return sendInFlight
       }
 
+      /** 宿主当前有没有「普通发送按钮」。会话运行中主按钮是停止键 → 没有，
+       *  这时草稿为空就完全没有提交入口（见 sendAnnotationsFromChip）。 */
+      function hasPlainSendButton() {
+        return document.querySelector(
+          '[data-composer-card] button[aria-label="发送消息"],'
+          + '[data-composer-card] button[aria-label="Send message"]') !== null
+      }
+
+      /** 胶囊上的显式发送键：运行中（主按钮是停止键）时，纯批注没有别的入口。
+       *  走与 Ctrl+Enter 同一条路——拼块进草稿，再由宿主提交成排队消息。 */
+      function sendAnnotationsFromChip() {
+        if (ui.quotes.length === 0 || sendStillInFlight()) return
+        if (!prependBlockForHostSubmit()) return
+        sendInFlight = true
+        sendInFlightSince = Date.now()
+        submitAttached()
+      }
+
       /** 只接管「空草稿的纯批注」这一种情况：
        *  - 有批注待发送，且上一次从按钮发出的批注已经结算完（sendStillInFlight）；
        *  - 按钮仍是宿主的普通发送按钮（运行中的停止 / 排队 / 插话按钮一律不碰）；
@@ -2215,6 +2246,12 @@ window.__ModuleLoader__.load({
         var button = document.querySelector(
           '[data-composer-card] button[aria-label="发送消息"],'
           + '[data-composer-card] button[aria-label="Send message"]')
+        // 运行开始/结束会翻转「有没有普通发送按钮」，胶囊上的显式发送键要跟着变。
+        var available = button !== null
+        if (available !== lastSendAvailable) {
+          lastSendAvailable = available
+          if (ui.quotes.length > 0) updateChip()
+        }
         if (button === null) {
           sendBtnState.el = null
           return
@@ -2304,7 +2341,7 @@ window.__ModuleLoader__.load({
         if (shell === null) {
           // 服务不可用：退回 DOM 注入，宿主自己的提交照常带走批注。
           var dom = domDraftText()
-          if (isCommandDraft(dom) || hasAnnotationBlock(dom)) return hasAnnotationBlock(dom)
+          if (isCommandDraft(dom, null) || hasAnnotationBlock(dom)) return hasAnnotationBlock(dom)
           var hasQ = dom.trim() !== ''
           if (!domAttachBlock(buildBlock(hasQ), hasQ)) return false
           annotationAttached = true
@@ -2315,7 +2352,7 @@ window.__ModuleLoader__.load({
         try {
           var draft = resolveDraftText(shell)
           var snap = inputSnapshotOf(shell)
-          if (isCommandDraft(draft) && !leadingTokenIsChip(draft, snap !== null ? snap.occurrences : null)) {
+          if (isCommandDraft(draft, shell)) {
             showToast(t('toast.skipCommand'))
             return false
           }
@@ -2328,7 +2365,7 @@ window.__ModuleLoader__.load({
           maskComposerForWeb()
           annotationAttached = true
           markFreshBubble()
-          console.log('[annotation] 批注块已拼入草稿，由宿主的同一次提交与正文/附件一起发出（'
+          dlog('[annotation] 批注块已拼入草稿，由宿主的同一次提交与正文/附件一起发出（'
             + ui.quotes.length + ' 条，含正文=' + hasQuestion + '）')
           return true
         } catch (err) {
@@ -2385,7 +2422,7 @@ window.__ModuleLoader__.load({
       hostCanQuote = canInsertQuote
       // 启动横幅：排查「两个窗口行为不一致」时先看这一行——它能区分「旧 bundle」
       // 与「新 bundle 但会话没解析出来」。
-      console.log('[annotation] v1.7.4 已加载（' + (isElectronHost() ? 'Electron 宿主' : 'Web 宿主') + '）；'
+      dlog('[annotation] v1.7.5 已加载（' + (isElectronHost() ? 'Electron 宿主' : 'Web 宿主') + '）；'
         + '用户消息批注=开（不依赖会话壳）；引用按钮='
         + (canInsertQuote() ? '宿主 API' : (hostQuoteFeature() ? 'DOM 兜底' : '宿主无引用能力')))
 
@@ -3387,10 +3424,56 @@ window.__ModuleLoader__.load({
         return !(e.ctrlKey || e.metaKey) || draft.trim() === ''
       }
 
-      /** 裸斜杠开头的草稿按宿主约定是命令（/goal、/model 等）：
-       *  宿主输入机靠「草稿以命令 token 开头」维持命令声明。 */
-      function isCommandDraft(draft) {
-        return draft.trimStart().charAt(0) === '/'
+      /** 草稿开头那个 `/token` 的命令名（不含斜杠）；不是斜杠开头返回 ''。 */
+      function commandNameOf(draft) {
+        var text = draft === null || draft === undefined ? '' : String(draft)
+        var trimmed = text.trimStart()
+        if (trimmed.charAt(0) !== '/') return ''
+        var m = /^\/([^\s/]+)/.exec(trimmed)
+        return m === null ? '' : m[1]
+      }
+
+      /** 这条草稿是不是宿主的**真命令**（/plan、/goal、/model…）。
+       *
+       *  v1.7.6：不再只看首字符。技能 `/goutoujunshi`、文件/会话引用的剪贴板投影
+       *  同样以 `/name` 开头，但它们只是正文里的引用 token——宿主 submit 时
+       *  `trimmed.startsWith("/")` 会去命令目录查，查不到就当普通消息发出。
+       *  把批注块拼到前面不影响它们，一刀切会白白吞掉「技能 + 批注」。
+       *
+       *  判定顺序：引用芯片（不是命令）→ 已 claim 的相位（权威）→ 命令目录同步查询
+       *  → 目录不可用或冷缓存时保守按命令处理（宁可少拼一次，也不打碎命令）。 */
+      function isCommandDraft(draft, shell) {
+        var name = commandNameOf(draft)
+        if (name === '') return false
+        var snap = inputSnapshotOf(shell)
+        if (leadingTokenIsChip(draft, snap !== null ? snap.occurrences : null)) return false
+        if (snap !== null && snap.phase === 'claimed') return true
+        try {
+          var ui = ctx.get('commandUi')
+          var dir = ui !== null && ui !== undefined ? ui.directory : null
+          if (dir !== null && dir !== undefined && typeof dir.resolve === 'function') {
+            var sessionId = currentSessionId()
+            if (dir.resolve(sessionId, name) !== undefined) return true
+            if (typeof dir.status === 'function' && dir.status(sessionId) === 'ready') return false
+            // 冷缓存：顺手预热，下一次就能判准。
+            if (typeof dir.refresh === 'function') { try { dir.refresh(sessionId) } catch (_) {} }
+          }
+        } catch (_) { /* 目录不可用 → 保守 */ }
+        return true
+      }
+
+      /** 预热命令目录：冷缓存时 isCommandDraft 只能保守拦，预热后技能 token 才能放行。 */
+      var warmSession = ''
+      function warmCommandCatalog() {
+        try {
+          var sessionId = currentSessionId()
+          if (sessionId === '' || sessionId === warmSession) return
+          var ui = ctx.get('commandUi')
+          var dir = ui !== null && ui !== undefined ? ui.directory : null
+          if (dir === null || dir === undefined || typeof dir.refresh !== 'function') return
+          warmSession = sessionId
+          dir.refresh(sessionId)
+        } catch (_) {}
       }
 
       /** 开头那个 `/token` 是不是**引用芯片**（技能 / 文件 / 会话）。
@@ -3480,7 +3563,7 @@ window.__ModuleLoader__.load({
             var draft = resolveDraftText(shell)
             if (!shouldAttachForEnter(e, draft)) return false
             var snap = inputSnapshotOf(shell)
-            if (isCommandDraft(draft) && !leadingTokenIsChip(draft, snap !== null ? snap.occurrences : null)) {
+            if (isCommandDraft(draft, shell)) {
               showToast(t('toast.skipCommand'))
               return false
             }
@@ -3500,7 +3583,7 @@ window.__ModuleLoader__.load({
             maskComposerForWeb()
             annotationAttached = true
             markFreshBubble()
-            console.log('[annotation] 批注块已拼入草稿，将与正文/附件同一条消息发出（'
+            dlog('[annotation] 批注块已拼入草稿，将与正文/附件同一条消息发出（'
               + ui.quotes.length + ' 条，含正文=' + hasQuestion + '）')
             return true
           } catch (err) {
@@ -3514,7 +3597,7 @@ window.__ModuleLoader__.load({
         try {
           var domDraft = domDraftText()
           if (!shouldAttachForEnter(e, domDraft)) return false
-          if (isCommandDraft(domDraft)) {
+          if (isCommandDraft(domDraft, null)) {
             showToast(t('toast.skipCommand'))
             return false
           }
@@ -3527,7 +3610,7 @@ window.__ModuleLoader__.load({
           annotationAttached = true
           domAttached = true
           markFreshBubble()
-          console.log('[annotation] 批注块已注入输入区（DOM 回退），回车将随消息发送（' + ui.quotes.length + ' 条）')
+          dlog('[annotation] 批注块已注入输入区（DOM 回退），回车将随消息发送（' + ui.quotes.length + ' 条）')
           return true
         } catch (err) {
           console.warn('[annotation] 批注拼稿失败：', err)
@@ -3673,6 +3756,12 @@ window.__ModuleLoader__.load({
       chipLayer.addEventListener('pointerdown', function (ev) {
         var t = ev.target
         if (t === null || typeof t.closest !== 'function') return
+        if (t.closest('[data-ann-send]') !== null) {
+          ev.preventDefault()
+          ev.stopPropagation()
+          sendAnnotationsFromChip()
+          return
+        }
         if (t.closest('[data-ann-clear-all]') === null) return
         ev.preventDefault()
         ev.stopPropagation()
@@ -3718,6 +3807,20 @@ window.__ModuleLoader__.load({
         ic.innerHTML = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><path d="M2 3h8M2 6h8M2 9h5"/></svg>'
         chipLayer.appendChild(ic)
         chipLayer.appendChild(document.createTextNode(' ' + ui.quotes.length + ' 条批注'))
+        // 运行中宿主的主按钮是「停止」键，没有普通发送键 → 草稿为空时纯批注
+        // 没有任何提交入口（用户实测：只有批注时发不出去，打了字才出现发送键）。
+        // 这里给一个显式发送键，走与 Ctrl+Enter 同一条排队路径。
+        if (!hasPlainSendButton()) {
+          var sendBtn = document.createElement('span')
+          sendBtn.setAttribute('data-ann-send', '')
+          sendBtn.setAttribute('role', 'button')
+          sendBtn.title = t('chip.send')
+          sendBtn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;margin-left:2px;cursor:pointer;opacity:.75;flex:none;border-radius:9px;pointer-events:auto;'
+          sendBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"><path d="M2 6h8M6.5 2.5L10 6l-3.5 3.5"/></svg>'
+          sendBtn.addEventListener('mouseenter', function () { sendBtn.style.opacity = '1' })
+          sendBtn.addEventListener('mouseleave', function () { sendBtn.style.opacity = '.75' })
+          chipLayer.appendChild(sendBtn)
+        }
         var closeX = document.createElement('span')
         closeX.setAttribute('data-ann-clear-all', '')
         closeX.setAttribute('role', 'button')
@@ -4218,11 +4321,24 @@ window.__ModuleLoader__.load({
         // 数据（两端实测：100 个 flow-kind 行里只有 6 个 user，徽章数为 0）。
         var turnKey = row.getAttribute('data-chat-turn')
         if (turnKey !== null && items.length > 0) turnItems.set(turnKey, items)
-        console.log('[annotation] 气泡已贴批注标签 ×' + items.length)
+        dlog('[annotation] 气泡已贴批注标签 ×' + items.length)
       }
 
       /** 发送完成时暂存批注数据（供气泡 hover 面板使用）。 */
       var pendingDeco = []
+
+      /** turn 缓存快捷路径能否只补标签：气泡里没有批注块才行。
+       *  块又出现（宿主重渲染把消息原文写回）时必须返回 false，交给隐藏路径。 */
+      function canAttachTagOnly(bodyText) {
+        return !hasAnnotationBlock(bodyText || '')
+      }
+
+      /** 这一行能不能直接跳过：标签在、且块确实不在了才跳。
+       *  块又出现（重渲染写回原文）→ 必须重新隐藏，哪怕标签还在（v1.7.8）。 */
+      function shouldSkipRow(bodyText, hasTag) {
+        if (hasAnnotationBlock(bodyText || '')) return false
+        return hasTag === true
+      }
 
       /** turn 号 → 该轮用户消息的批注条目（内存态；会话切换时清空）。 */
       var turnItems = new Map()
@@ -4338,7 +4454,7 @@ window.__ModuleLoader__.load({
           } catch (_) { /* 结构异常（跨了不该跨的元素）就跳过这一条 */ }
         }
         if (done > 0) {
-          console.log('[annotation] 回复批注芯片 ×' + done, row.querySelectorAll('[data-annotation-reply-chip]').length + ' 个元素')
+          dlog('[annotation] 回复批注芯片 ×' + done, row.querySelectorAll('[data-annotation-reply-chip]').length + ' 个元素')
         }
         return done
       }
@@ -4429,17 +4545,22 @@ window.__ModuleLoader__.load({
           for (var i = rows.length - 1; i >= 0; i--) {
             var el = rows[i]
             if (el.hasAttribute('data-pending-steering')) continue
-            if (el.querySelector('[data-annotation-bubble-tag]') !== null) continue
+            // v1.7.8：标签存在 ≠ 块已隐藏。宿主重渲染会把消息原文写回气泡、
+            // 而插件贴的标签节点原地保留（React 只更新文本节点）——此时若照旧
+            // 按「有标签就跳过」，块会永久露在气泡里。有块就必须走隐藏路径。
+            var rowBody = el.querySelector('[data-message-bubble]') || el.querySelector('[class*="bubble"]')
+            var blockVisible = rowBody !== null && hasAnnotationBlock(rowBody.textContent || '')
+            if (shouldSkipRow(rowBody === null ? '' : (rowBody.textContent || ''), el.querySelector('[data-annotation-bubble-tag]') !== null)) continue
             // 徽章在宿主重渲染时被清掉、批注块又已隐藏 → hasAnnotationBlock 永远
             // 为 false，正常路径再也贴不回去。这条恢复路径按 turn 缓存补一次。
             var cachedTurn = el.getAttribute('data-chat-turn')
             if (el.getAttribute('data-chat-flow-kind') === 'user'
-              && cachedTurn !== null && turnItems.has(cachedTurn)) {
+              && cachedTurn !== null && turnItems.has(cachedTurn) && !blockVisible) {
               attachBubbleTag(el, turnItems.get(cachedTurn))
               continue
             }
-            var b = el.querySelector('[class*="bubble"]')
-            if (b === null || !hasAnnotationBlock(b.textContent || '')) continue
+            var b = rowBody
+            if (b === null || !blockVisible) continue
             // 最新一条优先消费发送时暂存的数据；其余从气泡文本反解析（须在隐藏前）。
             var items = null
             var fromSend = false

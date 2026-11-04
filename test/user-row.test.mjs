@@ -165,7 +165,6 @@ test('单条原文封顶 2000 字符，别让整段用户消息把上下文撑�
   assert.ok(block.length < 3000, `block should stay bounded, got ${block.length}`)
 })
 
-// ---------- 4. 反解析 ----------
 
 function makeParseItemsFromBubble(text) {
   const row = new FakeEl({}, { '[class*="bubble"]': { textContent: text } })
@@ -183,4 +182,23 @@ test('来源标注是元数据：反解析出的原文里不能带它', () => {
   assert.equal(items.length, 1)
   assert.equal(items[0].text, '卸载这个皮肤吧')
   assert.equal(items[0].note, '我是说真的')
+})
+
+// ---------- 6. 宿主重渲染后不能只补标签 ----------
+
+test('气泡里又有批注块时必须走隐藏路径，不能只补标签（v1.7.7 回归）', () => {
+  const canAttachTagOnly = extract('canAttachTagOnly', {
+    hasAnnotationBlock: (text) => /我批注了以下|I annotated the following/.test(text || ''),
+  })
+  assert.equal(canAttachTagOnly('普通正文 + 批注 ×1'), true, '块已隐藏 → 只补标签')
+  assert.equal(canAttachTagOnly('我批注了以下 1 处内容（编号与原文对应），请针对它们回答我的问题：'), false, '块又出现 → 必须重新隐藏')
+  assert.equal(canAttachTagOnly(''), true)
+})
+test('标签在、但块又出现时不能跳过（v1.7.8 回归）', () => {
+  const shouldSkipRow = extract('shouldSkipRow', {
+    hasAnnotationBlock: (text) => /我批注了以下|I annotated the following/.test(text || ''),
+  })
+  assert.equal(shouldSkipRow('普通正文', true), true, '标签在、块不在 → 跳过（原意）')
+  assert.equal(shouldSkipRow('我批注了以下 1 处内容（编号与原文对应）', true), false, '块又出现 → 必须重新隐藏')
+  assert.equal(shouldSkipRow('普通正文', false), false)
 })
