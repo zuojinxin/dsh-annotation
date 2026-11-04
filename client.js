@@ -996,7 +996,14 @@ window.__ModuleLoader__.load({
       // 来源决定候选行：用户批注只在用户气泡里找，助手批注只在助手行里找。
       // 混装会让「助手回复」和「用户粘过来的同一段文字」互相抢命中。
       var byUser = saved !== undefined && saved !== null && saved.origin === 'user'
-      var rows = byUser ? userBubbles() : assistantRows()
+      // 候选行集**按需求值**：下面的 seqKey 快路径命中时会直接 return，而
+      // userBubbles() / assistantRows() 每次都是 querySelectorAll + 逐行 querySelector。
+      // renderMarkers 每个滚动帧对每条批注都调一次本函数，提前求值等于每帧白扫一遍全部消息。
+      var rows = null
+      var rowsOf = function () {
+        if (rows === null) rows = byUser ? userBubbles() : assistantRows()
+        return rows
+      }
       if (saved !== undefined && saved !== null && saved.seqKey !== '') {
         try {
           var item = document.querySelector('[data-chat-anchor-key="' + CSS.escape(saved.seqKey) + '"]')
@@ -1054,6 +1061,8 @@ window.__ModuleLoader__.load({
           }
         } catch (_) { return null }
       }
+      // 快路径没命中（锚点消息被虚拟化卸载 / 没有 seqKey）才需要候选行集。
+      rows = rowsOf()
       if (saved !== undefined && saved !== null && saved.rowHead !== '') {
         for (var r = 0; r < rows.length; r++) {
           var rowText = rows[r].textContent || ''
