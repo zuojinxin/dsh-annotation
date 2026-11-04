@@ -327,6 +327,18 @@ window.__ModuleLoader__.load({
         'body:has([role="dialog"][aria-modal="true"]) [data-annotation-overlay] { display: none; }',
         'html.dsh-ann-active [data-text-interaction-surface] { visibility: hidden !important; }',
         '.dsh-ann-tip { animation: dsh-ann-pop .12s var(--ds-ease-in-out, ease); }',
+        // 纯 CSS 兜底徽章：宿主重渲染会把我们 append 的 <span> 标签清掉（排队消息
+        // 落盘时尤其明显，气泡就变空白）。把计数写到气泡属性上，用 ::after 渲染，
+        // 伪元素不是 DOM 子节点，React 清不掉。
+        '[data-ann-count]::after { content: attr(data-ann-count-text); display: inline-flex;',
+        '  align-items: center; height: 22px; margin: 4px 0 0 4px; padding: 0 10px;',
+        '  border-radius: 11px; border: 1px solid var(--dsh-ann-border, rgba(0,0,0,.12));',
+        '  background: var(--dsh-ann-surface, #2c2c2e); box-shadow: var(--dsw-shadow-lv2);',
+        '  font-family: var(--dsw-font-family, system-ui); font-size: 11px;',
+        '  color: var(--dsw-alias-label-primary); white-space: nowrap; }',
+        // 已经用真 <span> 贴过标签时不要再画一份伪元素。
+        '[data-ann-count] > [data-annotation-bubble-tag] ~ * { }',
+        '[data-ann-count]:has(> [data-annotation-bubble-tag])::after { content: none; }',
         '@keyframes dsh-ann-fadein { from { opacity: 0; } to { opacity: 1; } }',
       ].join('\n')
       document.head.appendChild(style)
@@ -4362,8 +4374,12 @@ window.__ModuleLoader__.load({
 
       /** 在用户气泡上贴「批注 ×N」标签（hover 显示条目内容）。 */
       function attachBubbleTag(row, items) {
-        if (row.querySelector('[data-annotation-bubble-tag]') !== null) return
         var bubble = row.querySelector('[class*="bubble"]') || row
+        // 属性兜底：React 重渲染会清掉我们 append 的 <span>（排队消息落盘时最明显，
+        // 气泡会变成空白），伪元素不是子节点、清不掉，所以计数同时写一份到气泡上。
+        bubble.setAttribute('data-ann-count', String(items.length))
+        bubble.setAttribute('data-ann-count-text', t('bubble.tag', { n: items.length }))
+        if (row.querySelector('[data-annotation-bubble-tag]') !== null) return
         var tag = document.createElement('span')
         tag.setAttribute('data-annotation-bubble-tag', '')
         tag.className = 'dsh-ann-chip'
@@ -4760,7 +4776,13 @@ window.__ModuleLoader__.load({
         var tags = document.querySelectorAll('[data-annotation-bubble-tag]')
         for (var i = 0; i < tags.length; i++) {
           var items = tags[i].__annotationItems
-          if (Array.isArray(items)) tags[i].textContent = t('bubble.tag', { n: items.length })
+          if (Array.isArray(items)) {
+            tags[i].textContent = t('bubble.tag', { n: items.length })
+            var hostBubble = tags[i].parentElement
+            if (hostBubble !== null && hostBubble.hasAttribute('data-ann-count')) {
+              hostBubble.setAttribute('data-ann-count-text', t('bubble.tag', { n: items.length }))
+            }
+          }
         }
       }
       applyLocale()
