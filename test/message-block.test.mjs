@@ -50,7 +50,7 @@ function harness(lang, draft, sourcePath) {
       var dom = domDraftText()
       return dom.trim() !== '' ? dom : text
     }
-    ${['buildBlock', 'shouldAttachForEnter', 'isCommandDraft', 'attachAndSend', 'cutRange', 'pruneEmpty', 'hideAnnotationBlock', 'parseItemsFromBubble'].map(fn).join('\n')}
+    ${['buildBlock', 'shouldAttachForEnter', 'isCommandDraft', 'leadingTokenIsChip', 'inputSnapshotOf', 'shiftReferences', 'draftPayloadFor', 'attachAndSend', 'cutRange', 'pruneEmpty', 'hideAnnotationBlock', 'parseItemsFromBubble'].map(fn).join('\n')}
     return { setLang, attachAndSend, hideAnnotationBlock, parseItemsFromBubble }
   `)(shell, document, { SHOW_TEXT: 4 }, sourcePath)
   api.setLang(lang)
