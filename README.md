@@ -1,8 +1,8 @@
 # dsh-annotation
 
-在 DSH 对话或工作区文件预览里选中文字，写一条批注，回车——批注块随你的消息一起发出，模型逐条按编号回答。
+在 DSH 对话（助手回复或你自己的消息）或工作区文件预览里选中文字，写一条批注，回车——批注块随你的消息一起发出，模型逐条按编号回答。
 
-[![DSH](https://img.shields.io/badge/DSH-up%20to%200.2.1--rc.3-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness) [![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE) [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH](https://img.shields.io/badge/DSH-up%20to%200.2.2--rc.1-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness) [![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE) [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
 
 ![选中文字、写批注、编号角标、待发清单、发送、回复逐条对照的完整交互](https://raw.githubusercontent.com/zuojinxin/dsh-annotation/main/docs/images/demo.gif)
 
@@ -57,8 +57,8 @@ dsh plugin --profile desktop add 'github:zuojinxin/dsh-annotation'
 
 ## 说明
 
-- 面向 DeepSeek Harness 0.2.1-rc.3（桌面版）。插件靠宿主 CSS 类名与 DOM 结构定位，DSH 升级后可能需要适配。
-- 支持对话消息正文与工作区文件预览里的文字；PDF、图片、iframe 内的 HTML 不在范围内。
+- 面向 DeepSeek Harness 0.2.2-rc.1。**只在 0.2.2-rc.1 上完整验证过，更早版本不保证兼容。** 插件靠宿主 CSS 类名与 DOM 结构定位，DSH 升级后可能需要适配。
+- 支持批注助手回复、**你自己发的消息**（含运行中插话的消息）与工作区文件预览里的文字；PDF、图片、iframe 内的 HTML 不在范围内。
 - 选中助手正文时，批注工具条会接管宿主自带的引用浮层，只留一个入口。
 - 界面文案与批注协议跟随宿主 `locale`（中文 / 英文，可运行时切换）。
 - 待发批注存在浏览器 `localStorage`，换浏览器或清站点数据会丢。

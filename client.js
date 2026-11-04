@@ -2519,7 +2519,7 @@ window.__ModuleLoader__.load({
       hostCanQuote = canInsertQuote
       // 启动横幅：排查「两个窗口行为不一致」时先看这一行——它能区分「旧 bundle」
       // 与「新 bundle 但会话没解析出来」。
-      dlog('[annotation] v1.7.5 已加载（' + (isElectronHost() ? 'Electron 宿主' : 'Web 宿主') + '）；'
+      dlog('[annotation] 已加载（' + (isElectronHost() ? 'Electron 宿主' : 'Web 宿主') + '）；'
         + '用户消息批注=开（不依赖会话壳）；引用按钮='
         + (canInsertQuote() ? '宿主 API' : (hostQuoteFeature() ? 'DOM 兜底' : '宿主无引用能力')))
 
