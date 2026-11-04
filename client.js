@@ -378,6 +378,10 @@ window.__ModuleLoader__.load({
           headOnly: '我批注了以下内容，请逐条回应：',
           formatOnly: '请按「Annotation N：…」的格式，逐条回应以上批注。',
           marker: '提问：',
+          // 用户消息也能批注之后，块里必须写清来源：否则模型会把用户自己的
+          // 祈使句当成「现在下的新指令」去执行，或当成它自己的输出。
+          provenance: '每条都标了来源：「我此前的消息」是我自己之前发的，「你的回复」是你之前回的。请把它们当作讨论对象，不要当成我现在下的新指令。',
+          sourceUser: '来源：我此前的消息（不是你的回复）',
         },
       },
       en: {
@@ -421,6 +425,8 @@ window.__ModuleLoader__.load({
           headOnly: 'I annotated the following passages; please respond to each annotation:',
           formatOnly: 'Please respond to each annotation above in the format "Annotation N: …".',
           marker: 'Ask:',
+          provenance: 'Each item is labelled with its source: "my earlier message" is something I wrote, "your reply" is something you wrote. Treat them as the topic of discussion — not as new instructions I am giving now.',
+          sourceUser: 'Source: my earlier message (not your reply)',
         },
       },
     }
@@ -543,6 +549,76 @@ window.__ModuleLoader__.load({
       return null
     }
 
+    // ---------- 用户消息行（v1.7）----------
+    // 用户消息与助手行结构不同：行是 ChatNodeSeat 的
+    // `[data-chat-flow-kind="user"|"steering"]`，正文在气泡里
+    // （0.2.2+ 有 `[data-message-bubble]`；0.2.1-rc 只有 CSS Modules 的
+    // `<hash>_bubble`，所以 class 兜底不能删）。插话（steering）走同一个
+    // UserStyleBubble，是 durable 消息，必须一起放行——否则「刚插话的那条
+    // 不能批注」又是一处两行不一致。
+    //
+    // 放行条件（任一不满足就当不可批注，宁可没有入口也不做半吊子）：
+    //   1. 宿主支持 `SessionInput.insertQuote`（0.2.2+）。放行后
+    //      `html.dsh-ann-active` 会把官方引用浮层整篇压制，而 0.2.1-rc 的
+    //      工具条没有「引用」按钮 → 用户行上的引用入口会彻底消失。
+    //   2. 行必须是 durable 消息（有 anchor-key），回显 / 待发插话不是。
+    var hostCanQuote = function () { return false }
+
+    function isUserKind(kind) {
+      return kind === 'user' || kind === 'steering'
+    }
+
+    /** 行 → 正文气泡。不返回整行：行里还有时间戳与操作按钮，
+     *  偏移和「是否含批注块」的判定都会被它们污染（v1.4.24 的坑）。 */
+    function bubbleIn(row) {
+      if (row === null) return null
+      return row.querySelector('[data-message-bubble]') || row.querySelector('[class*="bubble"]')
+    }
+
+    /** 用户消息行 → 可批注气泡；不是 durable 用户行时返回 null。 */
+    function userBubbleOf(node) {
+      if (!hostCanQuote()) return null
+      var el = (node instanceof Element) ? node : (node !== null ? node.parentElement : null)
+      while (el !== null && el !== document.body) {
+        // 待发插话（模型运行中发出的那条）：还没落盘、没有 anchor-key，但用户
+        // 看得见也想批注。放行，只留文本锚（seqKey 为空）：内存里的 range 让角标
+        // 当场画在这条气泡上；落盘后 range 断开 → locateQuote 按文本找回 durable 行。
+        if (el.hasAttribute('data-pending-steering')) return bubbleIn(el)
+        if (el.hasAttribute('data-chat-flow-kind')) {
+          if (!isUserKind(el.getAttribute('data-chat-flow-kind'))) return null
+          if (el.hasAttribute('data-submission-echo') || el.hasAttribute('data-pending-steering')) return null
+          if (el.querySelector('[data-submission-echo], [data-pending-steering]') !== null) return null
+          if (!el.hasAttribute('data-chat-anchor-key') && !el.hasAttribute('data-focus-anchor-key')) return null
+          return bubbleIn(el)
+        }
+        el = el.parentElement
+      }
+      return null
+    }
+
+    /** 全部可定位的用户气泡（含插话），DOM 顺序。
+     *  待发插话排在最后：durable 行优先命中（评分循环只在严格更高时才换），
+     *  只有在 durable 里找不到时才落到还没落盘的那条上。 */
+    function userBubbles() {
+      if (!hostCanQuote()) return []
+      var rows = document.querySelectorAll('[data-chat-flow-kind="user"], [data-chat-flow-kind="steering"]')
+      var out = []
+      for (var i = 0; i < rows.length; i++) {
+        var row = rows[i]
+        if (row.hasAttribute('data-submission-echo') || row.hasAttribute('data-pending-steering')) continue
+        if (row.querySelector('[data-submission-echo], [data-pending-steering]') !== null) continue
+        if (!row.hasAttribute('data-chat-anchor-key') && !row.hasAttribute('data-focus-anchor-key')) continue
+        var b = bubbleIn(row)
+        if (b !== null) out.push(b)
+      }
+      var pending = document.querySelectorAll('[data-pending-steering]')
+      for (var j = 0; j < pending.length; j++) {
+        var pb = bubbleIn(pending[j])
+        if (pb !== null) out.push(pb)
+      }
+      return out
+    }
+
     // 只接管宿主的可选文本正文；标题、按钮、PDF 和 iframe 不属于此接口。
     var DOCUMENT_TEXT = '[data-textpreview-plain], [data-document-markdown], [data-code-preview] pre'
 
@@ -565,7 +641,8 @@ window.__ModuleLoader__.load({
 
     function annotationRootOf(node) {
       var source = documentSourceOf(node)
-      return source !== null ? source.root : assistantRowOf(node)
+      if (source !== null) return source.root
+      return assistantRowOf(node) || userBubbleOf(node)
     }
 
     function quoteRects(range, saved) {
@@ -843,6 +920,20 @@ window.__ModuleLoader__.load({
       return null
     }
 
+    /** Range 所在的 flow 行（用户/助手/其它）。 */
+    function flowRowOf(range) {
+      var el = range.startContainer
+      el = (el instanceof Element) ? el : (el !== null ? el.parentElement : null)
+      return el !== null && el.closest ? el.closest('[data-chat-flow-kind]') : null
+    }
+
+    /** 行是否携带批注块：块里内嵌了原文副本，命中它会让角标跳到随后被切掉的块上。 */
+    function rowCarriesBlock(row) {
+      if (row === null) return false
+      var body = row.querySelector('[data-message-bubble]') || row.querySelector('[class*="bubble"]') || row
+      return hasAnnotationBlock(body.textContent || '')
+    }
+
     /** 定位批注的 Range：消息 seq 锚定优先，空白不敏感重搜兜底。 */
     function locateQuote(quote, saved) {
       if (saved && saved.sourceUrl) {
@@ -873,10 +964,13 @@ window.__ModuleLoader__.load({
           }
         } catch (_) { /* range 已失效 */ }
       }
-      var rows = assistantRows()
+      // 来源决定候选行：用户批注只在用户气泡里找，助手批注只在助手行里找。
+      // 混装会让「助手回复」和「用户粘过来的同一段文字」互相抢命中。
+      var byUser = saved !== undefined && saved !== null && saved.origin === 'user'
+      var rows = byUser ? userBubbles() : assistantRows()
       if (saved !== undefined && saved !== null && saved.seqKey !== '') {
         try {
-          var item = document.querySelector('[data-chat-anchor-key="' + saved.seqKey + '"]')
+          var item = document.querySelector('[data-chat-anchor-key="' + CSS.escape(saved.seqKey) + '"]')
           // focus-chat 视图的锚 key 属性名不同，值语义一致。
           if (item === null) {
             item = document.querySelector('[data-focus-anchor-key="' + saved.seqKey + '"]')
@@ -975,6 +1069,8 @@ window.__ModuleLoader__.load({
       var bestScore = -1
       for (var i = 0; i < rows.length; i++) {
         var full = rows[i].textContent || ''
+        // 携带批注块的行里，同一段原文还有一份副本（块内引用）；命中副本会画错位置。
+        if (rowCarriesBlock(byUser ? rows[i].closest('[data-chat-flow-kind]') : rows[i])) continue
         var spans = allNormSpans(full, quote)
         for (var p = 0; p < spans.length; p++) {
           var range = rangeFromOffset(rows[i], spans[p].start, spans[p].end - spans[p].start)
@@ -997,7 +1093,15 @@ window.__ModuleLoader__.load({
           var score2 = ctxScore(full2, positions2[q2], quote.length, ctx)
           if (score2 > bestScore2) { bestScore2 = score2; best2 = range2 }
         }
-        if (best2 !== null && (ctx === null || bestScore2 > 0)) return best2
+        if (best2 !== null && (ctx === null || bestScore2 > 0)) {
+          // 全量扫描是最后一道兜底，必须自己校验：不能落到带批注块的行（块内副本），
+          // 也不能让用户来源的批注落到助手行（反之亦然）。
+          var hitRow = flowRowOf(best2)
+          if (rowCarriesBlock(hitRow)) return null
+          var hitKind = hitRow !== null ? hitRow.getAttribute('data-chat-flow-kind') : ''
+          if (byUser ? !isUserKind(hitKind) : isUserKind(hitKind)) return null
+          return best2
+        }
       }
       return null
     }
@@ -1155,6 +1259,9 @@ window.__ModuleLoader__.load({
             id: q.id,
             text: q.text,
             note: typeof q.note === 'string' ? q.note : '',
+            // 老数据没有 origin（那时只能批注助手正文）→ 一律当助手，别去搜用户气泡。
+            // 助手来源不落字段，保持老存档的往返形状不变。
+            ...(q.origin === 'user' || q.origin === 'file' ? { origin: q.origin } : {}),
             ...(typeof q.sourceUrl === 'string' && typeof q.sourcePath === 'string'
               ? { sourceUrl: q.sourceUrl, sourcePath: q.sourcePath } : {}),
             range: null,
@@ -1176,6 +1283,7 @@ window.__ModuleLoader__.load({
           id: q.id,
           text: q.text,
           note: q.note || '',
+          ...(q.origin && q.origin !== 'assistant' ? { origin: q.origin } : {}),
           ...(q.sourceUrl ? { sourceUrl: q.sourceUrl, sourcePath: q.sourcePath } : {}),
           seqKey: q.seqKey || '',
           rowHead: q.rowHead || '',
@@ -1552,6 +1660,7 @@ window.__ModuleLoader__.load({
         var ancEl = anc instanceof Element ? anc : (anc && anc.parentElement)
         if (ancEl !== null && ancEl.closest) {
           if (ancEl.closest('[data-annotation-for-dsh]') || ancEl.closest('[data-annotation-overlay]') || ancEl.closest('[data-annotation-markers]')
+            || ancEl.closest('[data-annotation-bubble-tag]') || ancEl.closest('[data-annotation-reply-chip]')
             || ancEl.closest('[data-composer-card]') || ancEl.closest('[data-input-scroll]')) {
             clearSettle()
             return
@@ -2236,6 +2345,10 @@ window.__ModuleLoader__.load({
         canQuoteCached = true
         return true
       }
+      // 用户消息批注的放行闸（见 userBubbleOf 的注释）：放行后官方引用浮层会被
+      // 整篇压制，而 0.2.1-rc 的工具条给不出「引用」按钮 → 用户行会失去引用入口。
+      // 所以宿主不支持 insertQuote 时干脆不放行用户行（保持现状 = 不产生回归）。
+      hostCanQuote = canInsertQuote
 
       /** 工具条「引用文本」：走宿主公开的 SessionInput.insertQuote 插入原子引用节点。 */
       function insertQuoteFromToolbar() {
@@ -2324,6 +2437,36 @@ window.__ModuleLoader__.load({
         syncSurfaceSuppression()
       }
 
+      /** 同一处内容 = 同一锚点消息 + 同一偏移（偏移不可用时退回「消息 + 原文」）。
+       *  只按原文全等去重会让「继续」「好」这类短语在第二条消息上永远加不进去
+       *  （按钮变「已批注」，绕过也会在保存时静默丢弃）。 */
+      function sameQuoteTarget(q, text, sourceUrl, seqKey, textOffset) {
+        if (q.text !== text) return false
+        if ((q.sourceUrl || '') !== (sourceUrl || '')) return false
+        if (seqKey !== '' && q.seqKey !== '' && seqKey !== q.seqKey) return false
+        if (textOffset >= 0 && q.textOffset >= 0 && textOffset !== q.textOffset) return false
+        return true
+      }
+
+      /** 当前稳定选区的（锚点消息, 偏移）。取不到偏移时给 -1。 */
+      function selectionTarget() {
+        var out = { seqKey: '', textOffset: -1 }
+        try {
+          var r = ui.settledRange
+          if (r === null || r === undefined || ui.selectionRoot === null || ui.selectionRoot === undefined) return out
+          var el = r.commonAncestorContainer
+          el = (el instanceof Element) ? el : (el !== null ? el.parentElement : null)
+          var row = el !== null && el.closest
+            ? el.closest('[data-chat-anchor-key], [data-focus-anchor-key]') : null
+          if (row !== null) {
+            out.seqKey = row.getAttribute('data-chat-anchor-key')
+              || row.getAttribute('data-focus-anchor-key') || ''
+          }
+          out.textOffset = offsetOfRangeInRow(ui.selectionRoot, r)
+        } catch (_) { /* 选区已失效 → 退回原文全等 */ }
+        return out
+      }
+
       function render() {
         host.textContent = ''
         ui.el = null
@@ -2332,7 +2475,10 @@ window.__ModuleLoader__.load({
           bar.className = 'dsh-ann-bar'
           bar.style.left = ui.pos.left + 'px'
           bar.style.top = ui.pos.top + 'px'
-          var already = ui.quotes.some(function (q) { return q.text === ui.quote && (q.sourceUrl || '') === (ui.source && ui.source.sourceUrl || '') })
+          var target = selectionTarget()
+          var already = ui.quotes.some(function (q) {
+            return sameQuoteTarget(q, ui.quote, ui.source && ui.source.sourceUrl, target.seqKey, target.textOffset)
+          })
           bar.appendChild(ghostButton(
             already ? null : ICONS.plus,
             already ? t('actions.already') : t('actions.annotate'),
@@ -2966,7 +3112,7 @@ window.__ModuleLoader__.load({
       function captureAnchor(text) {
         var anchor = {
           range: null, seqKey: '', rowHead: '', textOffset: -1,
-          ctxBefore: '', ctxAfter: '',
+          ctxBefore: '', ctxAfter: '', origin: 'assistant',
           focusAtEnd: ui.focusAtEnd === true,
         }
         try {
@@ -2984,9 +3130,33 @@ window.__ModuleLoader__.load({
           }
           var source = documentSourceOf(live.commonAncestorContainer)
           if (source !== null) {
+            anchor.origin = 'file'
             anchor.sourceUrl = source.sourceUrl
             anchor.sourcePath = source.sourcePath
             anchor.textOffset = offsetOfRangeInRow(source.root, live) + liveText.indexOf(text)
+            return anchor
+          }
+          // 用户消息：气泡里的批注块排在正文**前面**，隐藏手术一切掉，DOM 偏移就整体
+          // 平移；官方引用芯片又会把 `> ` 前缀吃掉。所以用户行不写 textOffset，
+          // 只留 seqKey + 上下文文本，交给 locateQuote 按文本重搜（用户气泡是单文本
+          // 节点，重搜可靠）。rowHead 也不写：它只截前 24 字符、兜底取第一条匹配，
+          // 对「继续」「好」这类短消息等于必然贴错。
+          var userBubble = userBubbleOf(live.commonAncestorContainer)
+          if (userBubble !== null) {
+            anchor.origin = 'user'
+            var uRow = userBubble.closest('[data-chat-flow-kind]')
+            if (uRow !== null) {
+              anchor.seqKey = uRow.getAttribute('data-chat-anchor-key')
+                || uRow.getAttribute('data-focus-anchor-key') || ''
+            }
+            if (textMatch) {
+              var uText = userBubble.textContent || ''
+              var uOff = offsetOfRangeInRow(userBubble, live)
+              if (uOff >= 0) {
+                anchor.ctxBefore = uText.slice(Math.max(0, uOff - 24), uOff)
+                anchor.ctxAfter = uText.slice(uOff + text.length, uOff + text.length + 24)
+              }
+            }
             return anchor
           }
           var node = live.commonAncestorContainer
@@ -3126,15 +3296,21 @@ window.__ModuleLoader__.load({
       /** 组装批注块；只有附带正文时才添加「提问：」分隔标记。 */
       function buildBlock(hasQuestion) {
         var n = ui.quotes.length
+        var hasUser = ui.quotes.some(function (q) { return q.origin === 'user' })
         var parts = ui.quotes.map(function (q, i) {
-          var s = (i + 1) + '. ' + quoteWithSource(q).replace(/\n/g, '\n   ')
+          var body = quoteWithSource(q)
+          // 单条原文封顶：用户消息可能整段几千字，块会把上下文撑爆。
+          if (body.length > 2000) body = body.slice(0, 2000) + '…'
+          var s = (i + 1) + '. ' + body.replace(/\n/g, '\n   ')
+          if (q.origin === 'user') s += '\n   ' + t('block.sourceUser')
           if (q.note !== undefined && q.note.trim() !== '') {
             s += '\n   ' + t('block.notePrefix') + q.note.replace(/\n/g, '\n    ')
           }
           return s
         })
-        return t(hasQuestion ? 'block.head' : 'block.headOnly', { n: n }) + '\n\n'
-          + parts.join('\n\n')
+        return t(hasQuestion ? 'block.head' : 'block.headOnly', { n: n })
+          + (hasUser ? '\n\n' + t('block.provenance') : '')
+          + '\n\n' + parts.join('\n\n')
           + '\n\n' + t(hasQuestion ? 'block.format' : 'block.formatOnly', { n: n })
           + (hasQuestion ? '\n\n' + t('block.marker') : '')
       }
@@ -3258,12 +3434,15 @@ window.__ModuleLoader__.load({
           }
           ui.editingId = null
         }
-        if (!ui.quotes.some(function (q) { return q.text === text && (q.sourceUrl || '') === (ui.pendingAnchor && ui.pendingAnchor.sourceUrl || '') })) {
-          var a = ui.pendingAnchor || { range: null, seqKey: '', rowHead: '', textOffset: -1, ctxBefore: '', ctxAfter: '' }
+        var a = ui.pendingAnchor || { range: null, seqKey: '', rowHead: '', textOffset: -1, ctxBefore: '', ctxAfter: '', origin: 'assistant' }
+        if (!ui.quotes.some(function (q) {
+          return sameQuoteTarget(q, text, a.sourceUrl, a.seqKey || '', a.textOffset)
+        })) {
           ui.quotes.push({
             id: 'q-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
             text: text,
             note: note,
+            origin: a.origin === 'user' ? 'user' : (a.sourceUrl ? 'file' : 'assistant'),
             range: a.range,
             ...(a.sourceUrl ? { sourceUrl: a.sourceUrl, sourcePath: a.sourcePath } : {}),
             seqKey: a.seqKey,
@@ -3729,8 +3908,17 @@ window.__ModuleLoader__.load({
           var markers = blockMarkers()
           var marker = -1
           var markerStr = ''
+          // 只认批注块头之后的**第一个**「提问：」。用户正文里贴日志/引文时经常自带
+          // 「提问：」，原来取 lastIndexOf 会把正文前半段一起切掉（v1.7 用户消息可
+          // 批注后，这类正文明显变多）。找不到块头（更老格式）才退回 lastIndexOf。
+          var headAt = -1
+          var heads = ['我批注了以下', 'I annotated the following']
+          for (var hb = 0; hb < heads.length; hb++) {
+            var hi = full.indexOf(heads[hb])
+            if (hi !== -1 && (headAt === -1 || hi < headAt)) headAt = hi
+          }
           for (var p = 0; p < markers.length && marker === -1; p++) {
-            var idx = full.lastIndexOf(markers[p])
+            var idx = headAt !== -1 ? full.indexOf(markers[p], headAt) : full.lastIndexOf(markers[p])
             if (idx !== -1) { marker = idx; markerStr = markers[p] }
           }
           if (marker === -1) return false
@@ -3806,6 +3994,9 @@ window.__ModuleLoader__.load({
             var note = ''
             var nm = /\n\s*(?:批注：|Note:)\s*([\s\S]*)$/.exec(item)
             if (nm !== null) { note = nm[1].trim(); item = item.slice(0, nm.index) }
+            // 来源标注是元数据（v1.7 用户消息批注才有），不是原文：留在 tooltip 里
+            // 会让用户以为原文包含这一行。
+            item = item.replace(/\n[ \t]*(?:来源：|Source:)[^\n]*$/, '')
             out.push({ text: item.replace(/\n   /g, '\n').trim(), note: note })
           }
           return out
@@ -4198,6 +4389,7 @@ window.__ModuleLoader__.load({
 
       // ---------- 清理 ----------
       function teardown() {
+        hostCanQuote = function () { return false }
         clearSettle()
         stopFollowLoop()
         document.removeEventListener('selectionchange', onSelection)
