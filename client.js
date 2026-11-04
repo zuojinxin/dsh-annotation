@@ -4335,8 +4335,10 @@ window.__ModuleLoader__.load({
           var items = parseItemsFromBubble(b)
           if (items.length === 0 && !looksLikeOwnBlock(b.textContent || '')) continue
           if (!hideAnnotationBlock(b, b)) continue
-          if (items.length > 0 && b.querySelector('[data-annotation-bubble-tag]') === null) {
-            attachBubbleTag(b, items)
+          if (items.length > 0) {
+            if (strayDeco.length >= 10) strayDeco.shift()
+            strayDeco.push({ items: items })
+            if (b.querySelector('[data-annotation-bubble-tag]') === null) attachBubbleTag(b, items)
           }
         }
       }
@@ -4452,6 +4454,9 @@ window.__ModuleLoader__.load({
 
       /** 发送完成时暂存批注数据（供气泡 hover 面板使用）。 */
       var pendingDeco = []
+      // 兜底清场切掉的块，条目暂存在这里：排队气泡先被切、之后才落盘成消息行，
+      // 那时块已不可见、pendingDeco 也可能已消费——用它给消息行补回徽章。
+      var strayDeco = []
 
       /** turn 缓存快捷路径能否只补标签：气泡里没有批注块才行。
        *  块又出现（宿主重渲染把消息原文写回）时必须返回 false，交给隐藏路径。 */
@@ -4710,6 +4715,15 @@ window.__ModuleLoader__.load({
               && el.querySelector('[data-annotation-bubble-tag]') === null) {
               attachBubbleTag(el, pendingDeco[0].items)
               pendingDeco.shift()
+              continue
+            }
+            // 兜底清场在「排队气泡」上切过块（那时还没有消息行），块落盘后已经不可见；
+            // 用当时暂存的条目把徽章补回来。只看最近三行，避免贴到历史消息上。
+            if (!blockVisible && strayDeco.length > 0 && i >= rows.length - 3
+              && isUserKind(el.getAttribute('data-chat-flow-kind'))
+              && el.querySelector('[data-annotation-bubble-tag]') === null) {
+              attachBubbleTag(el, strayDeco[0].items)
+              strayDeco.shift()
               continue
             }
             if (b === null || !blockVisible) continue
