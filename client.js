@@ -4743,7 +4743,10 @@ window.__ModuleLoader__.load({
       var lastSessionId = currentSessionId()
       ui.quotes = readPendingQuotes(lastSessionId)
       var unsub = null
-      setInterval(function () {
+      // 会话切换轮询。**必须存句柄**：不存的话 teardown 清不掉，插件被禁用 / 热重载后
+      // 旧实例会一直每 500ms 读一次 localStorage，切会话时还会用旧内存数据写盘、
+      // 重新订阅输入——等于「关了还在偷偷跑」。
+      var sessionPollTimer = setInterval(function () {
         var cur = currentSessionId()
         if (cur === lastSessionId) return
         writePendingQuotes(lastSessionId)
@@ -4796,6 +4799,7 @@ window.__ModuleLoader__.load({
         if (typeof inputUnsub === 'function') inputUnsub()
         if (typeof localeUnsub === 'function') localeUnsub()
         if (decoTimer !== null) { clearInterval(decoTimer); decoTimer = null }
+        if (sessionPollTimer !== null) { clearInterval(sessionPollTimer); sessionPollTimer = null }
         if (composerObserver !== null) composerObserver.disconnect()
         chipLayer.remove()
         // 仅在仍指向本实例面板时清全局指针：新实例可能已接管（延迟 dispose）。
@@ -4812,6 +4816,22 @@ window.__ModuleLoader__.load({
         // 晚于新实例 apply），以旧 host/overlay 为基准的 sweep 会把新实例的浮层
         // 误判成残留删掉。不是当前实例就静默退出。
         if (window.__dshAnnotationTeardown === teardown) sweepStrayLayers()
+        // 贴进宿主 DOM 的装饰也要收掉，否则禁用插件后消息上还挂着「批注 ×N」标签，
+        // 必须刷新页面才消失。
+        //  · 气泡标签是纯追加节点 → 直接 remove。
+        //  · 回复芯片是「删掉原文再插入」的节点（见 decorateAnnotationLabels）→ 直接
+        //    remove 会让那段文字永久缺失，必须还原成文本。
+        try {
+          var leftoverTags = document.querySelectorAll('[data-annotation-bubble-tag]')
+          for (var lti = 0; lti < leftoverTags.length; lti++) leftoverTags[lti].remove()
+          var leftoverChips = document.querySelectorAll('[data-annotation-reply-chip]')
+          for (var lci = 0; lci < leftoverChips.length; lci++) {
+            var leftover = leftoverChips[lci]
+            var label = leftover.textContent || ''
+            if (leftover.parentNode === null) continue
+            leftover.parentNode.replaceChild(document.createTextNode(label === '' ? '' : label + '：'), leftover)
+          }
+        } catch (_) { /* 宿主结构异常时不清场，不影响卸载本身 */ }
         // 解除全局 teardown 引用，避免下一实例撤掉自己。
         if (window.__dshAnnotationTeardown === teardown) window.__dshAnnotationTeardown = null
       }
