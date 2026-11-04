@@ -368,6 +368,7 @@ window.__ModuleLoader__.load({
           attachFail: '批注拼稿失败，消息将不带批注发送：',
           quoteFail: '引用未能插入输入框（输入框可能正忙），请稍后重试',
           skipCommand: '本条是斜杠命令，未拼入批注；批注已保留，将随下一条消息发送',
+          chipAttachFail: '这条消息带技能/文件引用，无法同时拼入批注；批注已保留，请先发送它再单独发批注',
           sendBlocked: '批注未能发出（附件可能还在上传），请稍后重试：',
           deleted: '已删除该批注',
         },
@@ -415,6 +416,7 @@ window.__ModuleLoader__.load({
           attachFail: 'Failed to attach annotations; the message will be sent without them: ',
           quoteFail: 'Could not insert the quote (the composer may be busy); try again',
           skipCommand: 'Slash command detected — annotations stay pending and will attach to your next message',
+          chipAttachFail: 'This message carries a skill/file reference, so annotations cannot be attached to it. They stay pending — send this message first, then send the annotations.',
           sendBlocked: 'Annotation was not sent (an attachment may still be uploading); try again: ',
           deleted: 'Annotation deleted',
         },
@@ -564,6 +566,16 @@ window.__ModuleLoader__.load({
     //   2. 行必须是 durable 消息（有 anchor-key），回显 / 待发插话不是。
     var hostCanQuote = function () { return false }
 
+    // 只警告一次：用户行被能力闸挡掉时把原因写到 console（排查「客户端能批注正文、
+    // 不能批注用户消息」这类问题的第一现场）。
+    var userRowGateWarned = false
+    function warnUserRowGated() {
+      if (userRowGateWarned) return
+      userRowGateWarned = true
+      console.warn('[annotation] 用户消息批注未启用：宿主没解析出当前会话的输入壳（canInsertQuote=false）。'
+        + ' 0.2.1-rc 属预期；0.2.2+ 上出现请把这条连同 navigator.userAgent 一起发给维护者。')
+    }
+
     function isUserKind(kind) {
       return kind === 'user' || kind === 'steering'
     }
@@ -577,18 +589,21 @@ window.__ModuleLoader__.load({
 
     /** 用户消息行 → 可批注气泡；不是 durable 用户行时返回 null。 */
     function userBubbleOf(node) {
-      if (!hostCanQuote()) return null
       var el = (node instanceof Element) ? node : (node !== null ? node.parentElement : null)
       while (el !== null && el !== document.body) {
         // 待发插话（模型运行中发出的那条）：还没落盘、没有 anchor-key，但用户
         // 看得见也想批注。放行，只留文本锚（seqKey 为空）：内存里的 range 让角标
         // 当场画在这条气泡上；落盘后 range 断开 → locateQuote 按文本找回 durable 行。
-        if (el.hasAttribute('data-pending-steering')) return bubbleIn(el)
+        if (el.hasAttribute('data-pending-steering')) {
+          if (!hostCanQuote()) { warnUserRowGated(); return null }
+          return bubbleIn(el)
+        }
         if (el.hasAttribute('data-chat-flow-kind')) {
           if (!isUserKind(el.getAttribute('data-chat-flow-kind'))) return null
           if (el.hasAttribute('data-submission-echo') || el.hasAttribute('data-pending-steering')) return null
           if (el.querySelector('[data-submission-echo], [data-pending-steering]') !== null) return null
           if (!el.hasAttribute('data-chat-anchor-key') && !el.hasAttribute('data-focus-anchor-key')) return null
+          if (!hostCanQuote()) { warnUserRowGated(); return null }
           return bubbleIn(el)
         }
         el = el.parentElement
@@ -1438,6 +1453,14 @@ window.__ModuleLoader__.load({
           var raw = localStorage.getItem("dsh.sessions.current")
           if (raw) { var j = JSON.parse(raw); if (j && j.sessionId) return j.sessionId }
         } catch (_) {}
+        // Electron 宿主（DSH 客户端窗口）用的是独立 storage 分区，这个 key 可能
+        // 从来没写过 → 服务路径整条失联（拼稿退回 DOM、用户消息批注被能力闸挡掉）。
+        // 改问会话控制器自己要当前会话（ui-session 的 current 绑定源，值里带 key）。
+        try {
+          var s = sessionsSvc()
+          var cur = s !== null && s.current !== undefined && s.current !== null ? s.current.value : null
+          if (cur !== null && typeof cur.key === 'string' && cur.key !== '') return cur.key
+        } catch (_) {}
         return null
       }
 
@@ -2286,11 +2309,17 @@ window.__ModuleLoader__.load({
         }
         try {
           var draft = resolveDraftText(shell)
-          if (isCommandDraft(draft)) { showToast(t('toast.skipCommand')); return false }
+          var snap = inputSnapshotOf(shell)
+          if (isCommandDraft(draft) && !leadingTokenIsChip(draft, snap !== null ? snap.occurrences : null)) {
+            showToast(t('toast.skipCommand'))
+            return false
+          }
           if (hasAnnotationBlock(draft)) { annotationAttached = true; return true }
           var hasQuestion = draft.trim() !== ''
           if (rollbackDraft === null) rollbackDraft = draft
-          shell.setDraft(buildBlock(hasQuestion) + (hasQuestion ? '\n' + draft : ''))
+          var payload = draftPayloadFor(shell, buildBlock(hasQuestion), hasQuestion)
+          if (payload === null) { showToast(t('toast.chipAttachFail')); return false }
+          shell.setDraft(payload)
           maskComposerForWeb()
           annotationAttached = true
           markFreshBubble()
@@ -2349,6 +2378,10 @@ window.__ModuleLoader__.load({
       // 整篇压制，而 0.2.1-rc 的工具条给不出「引用」按钮 → 用户行会失去引用入口。
       // 所以宿主不支持 insertQuote 时干脆不放行用户行（保持现状 = 不产生回归）。
       hostCanQuote = canInsertQuote
+      // 启动横幅：排查「两个窗口行为不一致」时先看这一行——它能区分「旧 bundle」
+      // 与「新 bundle 但会话没解析出来」。
+      console.log('[annotation] v1.7.2 已加载（' + (isElectronHost() ? 'Electron 宿主' : 'Web 宿主') + '）；'
+        + '用户消息批注=' + (hostCanQuote() ? '开' : '待定（当前无会话，或宿主没有 insertQuote）'))
 
       /** 工具条「引用文本」：走宿主公开的 SessionInput.insertQuote 插入原子引用节点。 */
       function insertQuoteFromToolbar() {
@@ -3325,6 +3358,76 @@ window.__ModuleLoader__.load({
         return draft.trimStart().charAt(0) === '/'
       }
 
+      /** 开头那个 `/token` 是不是**引用芯片**（技能 / 文件 / 会话）。
+       *  芯片的剪贴板投影也是 `/name`（技能 ref 就是 `/skill-name`，见
+       *  dsh-client-ui-skill 的 openReference），但它不是命令声明：宿主
+       *  parseCommand 查不到注册项就按普通消息发出。所以「开头是 /」不等于
+       *  「是命令」，要看 token 是否落在某个 occurrence 区间里。 */
+      function leadingTokenIsChip(draft, occurrences) {
+        var text = draft === null || draft === undefined ? '' : String(draft)
+        if (text.trimStart().charAt(0) !== '/') return false
+        if (!Array.isArray(occurrences)) return false
+        var lead = text.length - text.trimStart().length
+        for (var i = 0; i < occurrences.length; i++) {
+          var o = occurrences[i]
+          if (o === null || o === undefined) continue
+          var at = typeof o.offset === 'number' ? o.offset : -1
+          var len = typeof o.length === 'number' ? o.length : 0
+          if (at <= lead && at + len > lead) return true
+        }
+        return false
+      }
+
+      /** 输入态快照（引用芯片 + 投影文本）。服务不可用时返回 null。 */
+      function inputSnapshotOf(shell) {
+        try {
+          var snap = shell !== null && shell !== undefined && shell.state !== undefined
+            ? shell.state.getSnapshot() : null
+          return snap !== null && typeof snap === 'object' ? snap : null
+        } catch (_) { return null }
+      }
+
+      /** 把引用芯片的偏移整体平移 pad（批注块长度）。
+       *  宿主 setDraft 运行期接受 {text, references, quotes}，字段与 Occurrence 同源
+       *  （copyReference 就是逐个取 source/ref/offset/length/label/clipboardText）。 */
+      function shiftReferences(occurrences, pad) {
+        var out = []
+        for (var i = 0; i < occurrences.length; i++) {
+          var o = occurrences[i]
+          if (o === null || o === undefined) continue
+          out.push({
+            source: o.source,
+            ref: o.ref,
+            label: o.label,
+            clipboardText: o.clipboardText,
+            offset: (typeof o.offset === 'number' ? o.offset : 0) + pad,
+            length: typeof o.length === 'number' ? o.length : 0,
+            ...(o.appearance === undefined ? {} : { appearance: o.appearance }),
+            ...(o.invalid === undefined ? {} : { invalid: o.invalid }),
+          })
+        }
+        return out
+      }
+
+      /** 拼稿载荷：有引用芯片时给结构化草稿（保住技能 / 文件 / 会话引用），
+       *  否则给纯文本。返回 null = 有芯片但宿主不接受结构化草稿 → **放弃拼块**，
+       *  绝不退回纯文本（那会把芯片压成文本，技能激活信息静默丢失）。 */
+      function draftPayloadFor(shell, block, hasQuestion) {
+        var snap = inputSnapshotOf(shell)
+        var snapText = snap !== null && typeof snap.draft === 'string' ? snap.draft : ''
+        var draftText = snapText.trim() !== '' ? snapText : resolveDraftText(shell)
+        var text = block + (hasQuestion ? '\n' + draftText : '')
+        var occ = snap !== null && Array.isArray(snap.occurrences) ? snap.occurrences : []
+        if (occ.length === 0) return text
+        var pad = block.length + (hasQuestion ? 1 : 0)
+        try {
+          return { text: text, references: shiftReferences(occ, pad), quotes: [] }
+        } catch (err) {
+          console.warn('[annotation] 带引用芯片的草稿不支持结构化拼块：', err)
+          return null
+        }
+      }
+
       /** 提交前把批注块拼进 composer 草稿（随回车一起发送）。
        *  返回 true 表示批注块已在草稿中（本次刚拼入，或之前已拼入未发送）。
        *  服务不可用（inactive context / 作用域未物化）时回退 DOM 注入，绝不静默丢批注。 */
@@ -3341,7 +3444,8 @@ window.__ModuleLoader__.load({
             // 正文随后被宿主自己提交成另一条消息（用户报的「分成两轮」）。
             var draft = resolveDraftText(shell)
             if (!shouldAttachForEnter(e, draft)) return false
-            if (isCommandDraft(draft)) {
+            var snap = inputSnapshotOf(shell)
+            if (isCommandDraft(draft) && !leadingTokenIsChip(draft, snap !== null ? snap.occurrences : null)) {
               showToast(t('toast.skipCommand'))
               return false
             }
@@ -3352,7 +3456,12 @@ window.__ModuleLoader__.load({
             var hasQuestion = draft.trim() !== ''
             var block = buildBlock(hasQuestion)
             if (rollbackDraft === null) rollbackDraft = draft
-            shell.setDraft(block + (hasQuestion ? '\n' + draft : ''))
+            var payload = draftPayloadFor(shell, block, hasQuestion)
+            if (payload === null) {
+              showToast(t('toast.chipAttachFail'))
+              return false
+            }
+            shell.setDraft(payload)
             maskComposerForWeb()
             annotationAttached = true
             markFreshBubble()

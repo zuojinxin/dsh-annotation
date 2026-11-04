@@ -67,6 +67,7 @@ function makeUserBubbleOf(capable) {
     hostCanQuote: () => capable,
     isUserKind: (k) => k === 'user' || k === 'steering',
     bubbleIn: extract('bubbleIn', {}),
+    warnUserRowGated: () => {},
     document: { body },
     Element: FakeEl,
   })
