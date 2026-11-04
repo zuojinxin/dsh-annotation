@@ -566,19 +566,16 @@ window.__ModuleLoader__.load({
     //   2. 行必须是 durable 消息（有 anchor-key），回显 / 待发插话不是。
     var hostCanQuote = function () { return false }
 
-    // 只警告一次：用户行被能力闸挡掉时把原因写到 console（排查「客户端能批注正文、
-    // 不能批注用户消息」这类问题的第一现场）。
-    var userRowGateWarned = false
-    // 由 apply() 装上：把「为什么解析不出会话壳」的中间值一次性打出来。
+    // 由 apply() 装上：把「宿主环境快照」一次性打出来（排查用）。
     var gateDiagnose = function () { return null }
-    function warnUserRowGated() {
-      if (userRowGateWarned) return
-      userRowGateWarned = true
-      console.warn('[annotation] 用户消息批注未启用：宿主没解析出当前会话的输入壳（canInsertQuote=false）。'
-        + ' 0.2.1-rc 属预期；0.2.2+ 上出现请把这条连同 navigator.userAgent 一起发给维护者。')
+    // 第一次真正命中用户行时打一次环境快照，不打扰日常使用。
+    var userRowSeen = false
+    function noteUserRowSeen() {
+      if (userRowSeen) return
+      userRowSeen = true
       try {
         var d = gateDiagnose()
-        if (d !== null) console.warn('[annotation] 能力闸诊断', d)
+        if (d !== null) console.log('[annotation] 首次用户行批注，环境快照 ' + JSON.stringify(d))
       } catch (_) {}
     }
 
@@ -587,15 +584,9 @@ window.__ModuleLoader__.load({
     }
 
     /** 宿主是否具备官方引用能力：0.2.2+ 的 ChatView 才渲染这个浮层容器。
-     *  比 canInsertQuote 弱——不依赖「会话输入壳」解析，所以 Electron 客户端
-     * 窗口（独立 storage 分区、拿不到当前会话）也能用它放行用户行批注。 */
+     *  只用来决定「引用」按钮走宿主 API 还是 DOM 兜底，**不再**决定用户行放行。 */
     function hostQuoteFeature() {
       try { return document.querySelector('[data-text-interaction-surface]') !== null } catch (_) { return false }
-    }
-
-    /** 用户行是否放行：宿主有引用能力即可；两者都没有（0.2.1-rc）才关。 */
-    function userRowsAllowed() {
-      return hostCanQuote() || hostQuoteFeature()
     }
 
     /** 行 → 正文气泡。不返回整行：行里还有时间戳与操作按钮，
@@ -612,16 +603,13 @@ window.__ModuleLoader__.load({
         // 待发插话（模型运行中发出的那条）：还没落盘、没有 anchor-key，但用户
         // 看得见也想批注。放行，只留文本锚（seqKey 为空）：内存里的 range 让角标
         // 当场画在这条气泡上；落盘后 range 断开 → locateQuote 按文本找回 durable 行。
-        if (el.hasAttribute('data-pending-steering')) {
-          if (!userRowsAllowed()) { warnUserRowGated(); return null }
-          return bubbleIn(el)
-        }
+        if (el.hasAttribute('data-pending-steering')) return bubbleIn(el)
         if (el.hasAttribute('data-chat-flow-kind')) {
           if (!isUserKind(el.getAttribute('data-chat-flow-kind'))) return null
           if (el.hasAttribute('data-submission-echo') || el.hasAttribute('data-pending-steering')) return null
           if (el.querySelector('[data-submission-echo], [data-pending-steering]') !== null) return null
           if (!el.hasAttribute('data-chat-anchor-key') && !el.hasAttribute('data-focus-anchor-key')) return null
-          if (!userRowsAllowed()) { warnUserRowGated(); return null }
+          noteUserRowSeen()
           return bubbleIn(el)
         }
         el = el.parentElement
@@ -633,7 +621,6 @@ window.__ModuleLoader__.load({
      *  待发插话排在最后：durable 行优先命中（评分循环只在严格更高时才换），
      *  只有在 durable 里找不到时才落到还没落盘的那条上。 */
     function userBubbles() {
-      if (!userRowsAllowed()) return []
       var rows = document.querySelectorAll('[data-chat-flow-kind="user"], [data-chat-flow-kind="steering"]')
       var out = []
       for (var i = 0; i < rows.length; i++) {
@@ -2398,9 +2385,9 @@ window.__ModuleLoader__.load({
       hostCanQuote = canInsertQuote
       // 启动横幅：排查「两个窗口行为不一致」时先看这一行——它能区分「旧 bundle」
       // 与「新 bundle 但会话没解析出来」。
-      console.log('[annotation] v1.7.3 已加载（' + (isElectronHost() ? 'Electron 宿主' : 'Web 宿主') + '）；'
-        + '用户消息批注=' + (userRowsAllowed() ? '开' : '关（宿主没有引用能力）')
-        + '；会话输入壳=' + (canInsertQuote() ? '有' : '无'))
+      console.log('[annotation] v1.7.4 已加载（' + (isElectronHost() ? 'Electron 宿主' : 'Web 宿主') + '）；'
+        + '用户消息批注=开（不依赖会话壳）；引用按钮='
+        + (canInsertQuote() ? '宿主 API' : (hostQuoteFeature() ? 'DOM 兜底' : '宿主无引用能力')))
 
       // 能力闸诊断：只在用户行被挡时打一次，用来定位「为什么解析不出会话壳」。
       gateDiagnose = function () {

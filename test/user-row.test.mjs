@@ -62,27 +62,24 @@ function buildUserRow({ kind = 'user', anchor = 'k1', echo = false, steering = f
   return { row, bubble: b }
 }
 
-function makeUserBubbleOf(capable) {
+function makeUserBubbleOf() {
   return extract('userBubbleOf', {
-    // 放行闸现在是「宿主具备引用能力」：insertQuote 可用，或 0.2.2+ 的官方浮层
-    // 容器存在。测试里直接给结果。
-    userRowsAllowed: () => capable,
     isUserKind: (k) => k === 'user' || k === 'steering',
     bubbleIn: extract('bubbleIn', {}),
-    warnUserRowGated: () => {},
+    noteUserRowSeen: () => {},
     document: { body },
     Element: FakeEl,
   })
 }
 
-test('宿主没有 insertQuote（0.2.1-rc）时，用户行不批注 —— 否则引用入口会消失', () => {
-  const userBubbleOf = makeUserBubbleOf(false)
+test('放行不再依赖宿主引用能力：0.2.1-rc 上也给批注入口（引用走 DOM 兜底）', () => {
+  const userBubbleOf = makeUserBubbleOf()
   const { bubble } = buildUserRow()
-  assert.equal(userBubbleOf(bubble), null)
+  assert.equal(userBubbleOf(bubble), bubble)
 })
 
 test('durable 用户行 / 插话行 / 待发插话放行；助手行、回显、无 anchor 的 durable 行不放行', () => {
-  const userBubbleOf = makeUserBubbleOf(true)
+  const userBubbleOf = makeUserBubbleOf()
   const user = buildUserRow()
   assert.equal(userBubbleOf(user.bubble), user.bubble, 'user row should be annotatable')
 
