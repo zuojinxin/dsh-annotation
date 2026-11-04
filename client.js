@@ -4329,12 +4329,24 @@ window.__ModuleLoader__.load({
           var b = bubbles[i]
           if (b.closest('[contenteditable="true"], textarea, input') !== null) continue
           if (b.closest('[data-chat-flow-kind]') !== null) continue
+          // 已经处理过的（染色 + 贴标签）不用每轮重复解析，否则 strayDeco 会被塞满重复项。
+          if (b.hasAttribute('data-ann-ghost')) continue
           if (!hasAnnotationBlock(b.textContent || '')) continue
-          // 先反解析再切（切完就解析不出来了）。切完把「批注 ×N」贴回这颗气泡，
-          // 否则纯批注消息会被切成一个空气泡（用户实测：既没正文也没徽章）。
           var items = parseItemsFromBubble(b)
           if (items.length === 0 && !looksLikeOwnBlock(b.textContent || '')) continue
-          if (!hideAnnotationBlock(b, b)) continue
+          // 纯批注（没有「提问：」）整条正文就是块 → 切了就变空气泡，改成染色透明；
+          // 有正文的照旧切块（气泡里还有问题，不会空）。
+          var hasQuestion = false
+          var mk = blockMarkers()
+          for (var m = 0; m < mk.length; m++) {
+            if ((b.textContent || '').indexOf(mk[m]) !== -1) { hasQuestion = true; break }
+          }
+          if (hasQuestion) {
+            if (!hideAnnotationBlock(b, b)) continue
+          } else {
+            b.style.color = 'transparent'
+            b.setAttribute('data-ann-ghost', '1')
+          }
           if (items.length > 0) {
             if (strayDeco.length >= 10) strayDeco.shift()
             strayDeco.push({ items: items })
