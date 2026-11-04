@@ -1920,8 +1920,6 @@ window.__ModuleLoader__.load({
           updateChip()
           // 盖在停止键上的原生发送键是 fixed 定位，滚动 / 尺寸变化要跟着挪。
           syncNativeSendButton()
-          // 待发插话气泡上的「批注 ×N」遮罩同样要跟着滚动。
-          syncPendingCovers()
           if (ui.mode === 'editing' && ui.el !== null) {
             // 标记锚定模式（点角标进入）：卡片跟着标记走，用户滚动后它仍在标记旁边；
             // 原文锚定模式（添加批注 / 编辑按钮进入）：沿用原来的「保持视口内」钳制。
@@ -2272,70 +2270,6 @@ window.__ModuleLoader__.load({
         }
       }
 
-      // ---------- 待发插话气泡：盖一层「批注 ×N」 ----------
-      // 运行中手动从队列发出的消息，宿主先渲染成「待发插话」气泡，正文就是草稿
-      // （也就是批注块）。这种节点不在消息流里、还会被宿主反复重渲染——直接改它的
-      // 文本会引出空气泡（1.8.1–1.8.6 的教训）。改成**盖一层自己的浮层**：
-      // 不动宿主 DOM，只在视觉上遮住原文并显示徽章；宿主重渲染时这层自动跟上。
-      var pendingCovers = new Map()   // bubble -> cover element
-
-      function coverBackground(el) {
-        for (var i = 0; el !== null && el !== document.body && i < 4; i++) {
-          var bg = getComputedStyle(el).backgroundColor
-          if (bg !== '' && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)') return bg
-          el = el.parentElement
-        }
-        return 'var(--dsw-alias-bg-layer-1, #fff)'
-      }
-
-      function syncPendingCovers() {
-        var alive = new Set()
-        var rows = document.querySelectorAll('[data-pending-steering]')
-        for (var i = 0; i < rows.length; i++) {
-          var b = rows[i].querySelector('[data-message-bubble]') || rows[i].querySelector('[class*="bubble"]')
-          if (b === null) continue
-          if (!hasAnnotationBlock(b.textContent || '')) continue
-          var items = parseItemsFromBubble(b)
-          var count = items.length > 0 ? items.length : 1
-          alive.add(b)
-          var cover = pendingCovers.get(b)
-          if (cover === undefined) {
-            cover = document.createElement('div')
-            cover.setAttribute('data-ann-pending-cover', '')
-            cover.style.cssText = 'position:fixed;z-index:930;pointer-events:none;display:flex;'
-              + 'align-items:center;justify-content:flex-end;padding:4px 8px;box-sizing:border-box;'
-            var chip = document.createElement('span')
-            chip.className = 'dsh-ann-chip'
-            cover.appendChild(chip)
-            document.body.appendChild(cover)
-            pendingCovers.set(b, cover)
-          }
-          var r = b.getBoundingClientRect()
-          if (r.width === 0 || r.height === 0) { cover.style.display = 'none'; continue }
-          cover.style.display = ''
-          cover.style.left = r.left + 'px'
-          cover.style.top = r.top + 'px'
-          cover.style.width = r.width + 'px'
-          cover.style.height = r.height + 'px'
-          cover.style.background = coverBackground(b)
-          cover.style.borderRadius = getComputedStyle(b).borderRadius
-          var chipEl = cover.firstElementChild
-          if (chipEl !== null) chipEl.textContent = t('bubble.tag', { n: count })
-        }
-        pendingCovers.forEach(function (cover, b) {
-          if (alive.has(b) && b.isConnected) return
-          if (cover.parentNode !== null) cover.parentNode.removeChild(cover)
-          pendingCovers.delete(b)
-        })
-      }
-
-      function teardownPendingCovers() {
-        pendingCovers.forEach(function (cover) {
-          if (cover.parentNode !== null) cover.parentNode.removeChild(cover)
-        })
-        pendingCovers.clear()
-      }
-
       function syncNativeSendButton() {
         try {
           var primary = primaryComposerButton()
@@ -2406,8 +2340,6 @@ window.__ModuleLoader__.load({
         }
         // 运行中把「停止」原位换成「发送」（有批注且草稿为空时）。
         syncNativeSendButton()
-        // 待发插话气泡的遮罩（每秒一轮，宿主重渲染后能跟上）。
-        syncPendingCovers()
         if (button === null) {
           sendBtnState.el = null
           return
@@ -4812,7 +4744,6 @@ window.__ModuleLoader__.load({
       function teardown() {
         hostCanQuote = function () { return false }
         teardownNativeSend()
-        teardownPendingCovers()
         clearSettle()
         stopFollowLoop()
         document.removeEventListener('selectionchange', onSelection)
