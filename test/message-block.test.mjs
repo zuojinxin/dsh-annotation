@@ -53,7 +53,7 @@ function harness(lang, draft, sourcePath) {
     function warmCommandCatalog() {}
     var ctx = { get: function () { return null } }
     function currentSessionId() { return 's1' }
-    ${['buildBlock', 'shouldAttachForEnter', 'commandNameOf', 'isCommandDraft', 'leadingTokenIsChip', 'inputSnapshotOf', 'shiftReferences', 'draftPayloadFor', 'attachAndSend', 'cutRange', 'pruneEmpty', 'hideAnnotationBlock', 'parseItemsFromBubble'].map(fn).join('\n')}
+    ${['buildBlock', 'shouldAttachForEnter', 'commandNameOf', 'isCommandDraft', 'leadingTokenIsChip', 'triggerMenuOpen', 'inputSnapshotOf', 'shiftReferences', 'draftPayloadFor', 'attachAndSend', 'cutRange', 'pruneEmpty', 'hideAnnotationBlock', 'parseItemsFromBubble'].map(fn).join('\n')}
     return { setLang, attachAndSend, hideAnnotationBlock, parseItemsFromBubble }
   `)(shell, document, { SHOW_TEXT: 4 }, sourcePath)
   api.setLang(lang)

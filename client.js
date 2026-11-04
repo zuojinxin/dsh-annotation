@@ -3559,6 +3559,20 @@ window.__ModuleLoader__.load({
         return true
       }
 
+      /** 宿主的输入触发器菜单（斜杠命令 / @ 文件 / 技能）是否开着。
+       *
+       *  菜单开着时，回车是「选中当前高亮项」，不是「发送消息」——宿主会自己吃掉这次
+       *  回车。此时若先把批注块拼进草稿，命令照样执行，块却留在了输入框里（用户实测：
+       *  输入 `/mo` 回车选 `/model`，批注原文整段显示在输入框）。
+       *  判定不能用命令目录：`/mo` 是前缀，不是注册名，resolve 查不到。
+       *  `[data-trigger-menu]` 是宿主菜单的稳定标记，对所有触发器通用。 */
+      function triggerMenuOpen(doc) {
+        try {
+          var d = doc !== undefined ? doc : document
+          return d.querySelector('[data-trigger-menu]') !== null
+        } catch (_) { return false }
+      }
+
       /** 预热命令目录：冷缓存时 isCommandDraft 只能保守拦，预热后技能 token 才能放行。 */
       var warmSession = ''
       function warmCommandCatalog() {
@@ -3647,6 +3661,9 @@ window.__ModuleLoader__.load({
        *  返回 true 表示批注块已在草稿中（本次刚拼入，或之前已拼入未发送）。
        *  服务不可用（inactive context / 作用域未物化）时回退 DOM 注入，绝不静默丢批注。 */
       function attachAndSend(e) {
+        // 触发器菜单开着：这次回车归菜单（选命令 / 选文件），不是发消息。
+        // 拼块会把批注原文留在输入框里（见 triggerMenuOpen 注释）。批注原样保留。
+        if (triggerMenuOpen()) return false
         var current = currentSessionId()
         var scoped = scopeOfSession(current)
         var shell = shellFor(scoped)

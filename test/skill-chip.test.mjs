@@ -146,3 +146,11 @@ test('引用芯片优先于目录：芯片形态的 /skill 永远不是命令', 
   })
   assert.equal(chipFirst('/darwin-skill 帮我看看'), false)
 })
+// ---------- v1.8.9：输入触发器菜单开着时绝不拼块 ----------
+
+test('触发器菜单开着 → 不拼块；关着 → 正常放行（/mo 回车选 /model 的根因）', () => {
+  const open = extract('triggerMenuOpen', {})
+  assert.equal(open({ querySelector: () => ({}) }), true, 'menu present → true')
+  assert.equal(open({ querySelector: () => null }), false, 'menu absent → false')
+  assert.equal(open(), false, 'no document → 安全返回 false，不阻断正常发送')
+})
