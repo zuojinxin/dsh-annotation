@@ -4679,6 +4679,16 @@ window.__ModuleLoader__.load({
               continue
             }
             var b = rowBody
+            // 块已经被「兜底清场」切掉（排队气泡先被切、之后才落盘成消息行），
+            // 或者宿主重渲染把块丢了：这时块不可见，但发送时暂存的条目还在——
+            // 给最新一行补上「批注 ×N」标签，否则用户看到的是「干净但没标签」。
+            if (!blockVisible && i === rows.length - 1 && pendingDeco.length > 0
+              && el.getAttribute('data-chat-flow-kind') === 'user'
+              && el.querySelector('[data-annotation-bubble-tag]') === null) {
+              attachBubbleTag(el, pendingDeco[0].items)
+              pendingDeco.shift()
+              continue
+            }
             if (b === null || !blockVisible) continue
             // 最新一条优先消费发送时暂存的数据；其余从气泡文本反解析（须在隐藏前）。
             var items = null
