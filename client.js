@@ -327,18 +327,6 @@ window.__ModuleLoader__.load({
         'body:has([role="dialog"][aria-modal="true"]) [data-annotation-overlay] { display: none; }',
         'html.dsh-ann-active [data-text-interaction-surface] { visibility: hidden !important; }',
         '.dsh-ann-tip { animation: dsh-ann-pop .12s var(--ds-ease-in-out, ease); }',
-        // 纯 CSS 兜底徽章：宿主重渲染会把我们 append 的 <span> 标签清掉（排队消息
-        // 落盘时尤其明显，气泡就变空白）。把计数写到气泡属性上，用 ::after 渲染，
-        // 伪元素不是 DOM 子节点，React 清不掉。
-        '[data-ann-count]::after { content: attr(data-ann-count-text); display: inline-flex;',
-        '  align-items: center; height: 22px; margin: 4px 0 0 4px; padding: 0 10px;',
-        '  border-radius: 11px; border: 1px solid var(--dsh-ann-border, rgba(0,0,0,.12));',
-        '  background: var(--dsh-ann-surface, #2c2c2e); box-shadow: var(--dsw-shadow-lv2);',
-        '  font-family: var(--dsw-font-family, system-ui); font-size: 11px;',
-        '  color: var(--dsw-alias-label-primary); white-space: nowrap; }',
-        // 已经用真 <span> 贴过标签时不要再画一份伪元素。
-        '[data-ann-count] > [data-annotation-bubble-tag] ~ * { }',
-        '[data-ann-count]:has(> [data-annotation-bubble-tag])::after { content: none; }',
         '@keyframes dsh-ann-fadein { from { opacity: 0; } to { opacity: 1; } }',
       ].join('\n')
       document.head.appendChild(style)
@@ -4319,42 +4307,6 @@ window.__ModuleLoader__.load({
         }
       }
 
-      /** 兜底清场：不在消息流里的气泡（排队消息、待发插话、队列 dock 预览）也要
-       *  把批注块切掉。decorateAll 只认 [data-chat-flow-kind] 行，而排队中的消息
-       *  没有这个包裹层——用户实测「排队消息发出去后气泡里露出整段批注块」就是
-       *  这条路径漏掉的。只切块、不贴标签（这些节点没有稳定的行可挂）。 */
-      function hideStrayBubbleBlocks() {
-        var bubbles = document.querySelectorAll('[data-message-bubble], [class*="bubble"]')
-        for (var i = 0; i < bubbles.length; i++) {
-          var b = bubbles[i]
-          if (b.closest('[contenteditable="true"], textarea, input') !== null) continue
-          if (b.closest('[data-chat-flow-kind]') !== null) continue
-          // 已经处理过的（染色 + 贴标签）不用每轮重复解析，否则 strayDeco 会被塞满重复项。
-          if (b.hasAttribute('data-ann-ghost')) continue
-          if (!hasAnnotationBlock(b.textContent || '')) continue
-          var items = parseItemsFromBubble(b)
-          if (items.length === 0 && !looksLikeOwnBlock(b.textContent || '')) continue
-          // 纯批注（没有「提问：」）整条正文就是块 → 切了就变空气泡，改成染色透明；
-          // 有正文的照旧切块（气泡里还有问题，不会空）。
-          var hasQuestion = false
-          var mk = blockMarkers()
-          for (var m = 0; m < mk.length; m++) {
-            if ((b.textContent || '').indexOf(mk[m]) !== -1) { hasQuestion = true; break }
-          }
-          if (hasQuestion) {
-            if (!hideAnnotationBlock(b, b)) continue
-          } else {
-            b.style.color = 'transparent'
-            b.setAttribute('data-ann-ghost', '1')
-          }
-          if (items.length > 0) {
-            if (strayDeco.length >= 10) strayDeco.shift()
-            strayDeco.push({ items: items })
-            if (b.querySelector('[data-annotation-bubble-tag]') === null) attachBubbleTag(b, items)
-          }
-        }
-      }
-
       /** 从气泡文本反解析批注条目（用于刷新后旧消息的 hover 内容）。 */
       function parseItemsFromBubble(row) {
         try {
@@ -4388,12 +4340,8 @@ window.__ModuleLoader__.load({
 
       /** 在用户气泡上贴「批注 ×N」标签（hover 显示条目内容）。 */
       function attachBubbleTag(row, items) {
-        var bubble = row.querySelector('[class*="bubble"]') || row
-        // 属性兜底：React 重渲染会清掉我们 append 的 <span>（排队消息落盘时最明显，
-        // 气泡会变成空白），伪元素不是子节点、清不掉，所以计数同时写一份到气泡上。
-        bubble.setAttribute('data-ann-count', String(items.length))
-        bubble.setAttribute('data-ann-count-text', t('bubble.tag', { n: items.length }))
         if (row.querySelector('[data-annotation-bubble-tag]') !== null) return
+        var bubble = row.querySelector('[class*="bubble"]') || row
         var tag = document.createElement('span')
         tag.setAttribute('data-annotation-bubble-tag', '')
         tag.className = 'dsh-ann-chip'
@@ -4466,9 +4414,6 @@ window.__ModuleLoader__.load({
 
       /** 发送完成时暂存批注数据（供气泡 hover 面板使用）。 */
       var pendingDeco = []
-      // 兜底清场切掉的块，条目暂存在这里：排队气泡先被切、之后才落盘成消息行，
-      // 那时块已不可见、pendingDeco 也可能已消费——用它给消息行补回徽章。
-      var strayDeco = []
 
       /** turn 缓存快捷路径能否只补标签：气泡里没有批注块才行。
        *  块又出现（宿主重渲染把消息原文写回）时必须返回 false，交给隐藏路径。 */
@@ -4481,21 +4426,6 @@ window.__ModuleLoader__.load({
       function shouldSkipRow(bodyText, hasTag) {
         if (hasAnnotationBlock(bodyText || '')) return false
         return hasTag === true
-      }
-
-      /** 文本里是否同时出现「块头 + 尾部指令」两段固定文案（zh/en 任一）。
-       *  这两句只由本插件生成，用户正文同时原样出现它们的概率可忽略——所以即使
-       *  条目解析失败，也能确认「这就是我方写的块」，可以放心切掉。 */
-      function looksLikeOwnBlock(text) {
-        if (typeof text !== 'string' || text === '') return false
-        var langs = ['zh', 'en']
-        for (var i = 0; i < langs.length; i++) {
-          var head = dictVal(langs[i], 'block.headOnly')
-          var tail = dictVal(langs[i], 'block.formatOnly')
-          if (head !== '' && tail !== ''
-            && text.indexOf(head) !== -1 && text.indexOf(tail) !== -1) return true
-        }
-        return false
       }
 
       /** turn 号 → 该轮用户消息的批注条目（内存态；会话切换时清空）。 */
@@ -4699,7 +4629,6 @@ window.__ModuleLoader__.load({
           // 启动之后才被别的实例塞进来的，也会在一个周期内收敛回单份。
           sweepStrayLayers()
           hideDockEchoBlocks()
-          hideStrayBubbleBlocks()
           var rows = allMessageRows()
           for (var i = rows.length - 1; i >= 0; i--) {
             var el = rows[i]
@@ -4713,31 +4642,12 @@ window.__ModuleLoader__.load({
             // 徽章在宿主重渲染时被清掉、批注块又已隐藏 → hasAnnotationBlock 永远
             // 为 false，正常路径再也贴不回去。这条恢复路径按 turn 缓存补一次。
             var cachedTurn = el.getAttribute('data-chat-turn')
-            if (isUserKind(el.getAttribute('data-chat-flow-kind'))
+            if (el.getAttribute('data-chat-flow-kind') === 'user'
               && cachedTurn !== null && turnItems.has(cachedTurn) && !blockVisible) {
               attachBubbleTag(el, turnItems.get(cachedTurn))
               continue
             }
             var b = rowBody
-            // 块已经被「兜底清场」切掉（排队气泡先被切、之后才落盘成消息行），
-            // 或者宿主重渲染把块丢了：这时块不可见，但发送时暂存的条目还在——
-            // 给最新一行补上「批注 ×N」标签，否则用户看到的是「干净但没标签」。
-            if (!blockVisible && i === rows.length - 1 && pendingDeco.length > 0
-              && isUserKind(el.getAttribute('data-chat-flow-kind'))
-              && el.querySelector('[data-annotation-bubble-tag]') === null) {
-              attachBubbleTag(el, pendingDeco[0].items)
-              pendingDeco.shift()
-              continue
-            }
-            // 兜底清场在「排队气泡」上切过块（那时还没有消息行），块落盘后已经不可见；
-            // 用当时暂存的条目把徽章补回来。只看最近三行，避免贴到历史消息上。
-            if (!blockVisible && strayDeco.length > 0 && i >= rows.length - 3
-              && isUserKind(el.getAttribute('data-chat-flow-kind'))
-              && el.querySelector('[data-annotation-bubble-tag]') === null) {
-              attachBubbleTag(el, strayDeco[0].items)
-              strayDeco.shift()
-              continue
-            }
             if (b === null || !blockVisible) continue
             // 最新一条优先消费发送时暂存的数据；其余从气泡文本反解析（须在隐藏前）。
             var items = null
@@ -4747,15 +4657,7 @@ window.__ModuleLoader__.load({
             // 解析不出条目就不是批注块（hasAnnotationBlock 只查「我批注了以下」这一句，
             // 正文引用这句话就会误判），此时不隐藏也不贴标签——否则会切掉用户正文、
             // 并贴出一个「批注 ×0」。
-            if (items.length === 0) {
-              // 例外：块头与尾部指令两段固定文案同时命中 = 确定是我方生成的块
-              // （用户实测：块永久露在气泡里，就是因为这里直接 continue）。照切，
-              // 只是贴不出条目 tooltip。
-              if (!looksLikeOwnBlock(b.textContent || '')) continue
-              if (!hideAnnotationBlock(el)) continue
-              if (fromSend) pendingDeco.shift()
-              continue
-            }
+            if (items.length === 0) continue
             if (!hideAnnotationBlock(el)) continue // 内容未渲染完 → 留给下轮（发送暂存数据不弹出）
             if (fromSend) pendingDeco.shift()
             attachBubbleTag(el, items)
@@ -4802,13 +4704,7 @@ window.__ModuleLoader__.load({
         var tags = document.querySelectorAll('[data-annotation-bubble-tag]')
         for (var i = 0; i < tags.length; i++) {
           var items = tags[i].__annotationItems
-          if (Array.isArray(items)) {
-            tags[i].textContent = t('bubble.tag', { n: items.length })
-            var hostBubble = tags[i].parentElement
-            if (hostBubble !== null && hostBubble.hasAttribute('data-ann-count')) {
-              hostBubble.setAttribute('data-ann-count-text', t('bubble.tag', { n: items.length }))
-            }
-          }
+          if (Array.isArray(items)) tags[i].textContent = t('bubble.tag', { n: items.length })
         }
       }
       applyLocale()

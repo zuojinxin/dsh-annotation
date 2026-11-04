@@ -38,8 +38,7 @@ test('芯片查找先命中 turn 缓存，再回退 DOM 回溯', () => {
 
 test('decorateAll 按缓存把丢失的徽章补回去，且只补用户消息行', () => {
   const fn = body('decorateAll')
-  assert.match(fn, /isUserKind\(el\.getAttribute\('data-chat-flow-kind'\)\)/,
-    '只恢复 user / steering 行（插话也是 durable 用户消息）')
+  assert.match(fn, /data-chat-flow-kind'\) === 'user'/, '只恢复 user 行')
   assert.match(fn, /turnItems\.has\(cachedTurn\)/, '要有缓存才恢复')
   assert.match(fn, /attachBubbleTag\(el, turnItems\.get\(cachedTurn\)\)/, '走同一套贴徽章逻辑')
 })
