@@ -2831,40 +2831,11 @@ window.__ModuleLoader__.load({
       var markersSig = null
       var markerHover = null
       var tipEditing = false
-      /** 上一次定位到的 Range 还能不能直接用。
-       *
-       *  滚动时同一段原文的 Range 一直有效，但旧实现每帧都要重新 locateQuote
-       *  （querySelector + TreeWalker + 全文归一化搜索），一帧里还算两遍（signature
-       *  一次、更新坐标一次）。工作量大到赶不上合成器的滚动帧 → 角标比文字慢半拍，
-       *  看起来就是「追着字跑」。编辑态之所以跟手，是因为它直接用内存里的 range，
-       *  不走 locateQuote。
-       *
-       *  校验只做两件事：节点还在文档里；Range 覆盖的文字仍等于原文（忽略空白）。
-       *  两者任一不成立就重新定位——所以重渲染、切会话、编辑消息都会自动失效。 */
-      function liveRangeOf(q) {
-        var r = q.__range
-        if (r === null || r === undefined) return null
-        try {
-          if (!r.startContainer.isConnected || !r.endContainer.isConnected) return null
-          if (r.toString().replace(/\s+/g, '') !== String(q.text).replace(/\s+/g, '')) return null
-          return r
-        } catch (_) { return null }
-      }
-
-      /** 取这条批注的 Range：优先复用缓存，失效才重新定位。 */
-      function rangeFor(q) {
-        var cached = liveRangeOf(q)
-        if (cached !== null) return cached
-        var fresh = locateQuote(q.text, q)
-        q.__range = fresh
-        return fresh
-      }
-
       function markersSignature() {
         var parts = []
         for (var i = 0; i < ui.quotes.length; i++) {
           var q = ui.quotes[i]
-          var range = rangeFor(q)
+          var range = locateQuote(q.text, q)
           if (range === null) { parts.push(q.id + ':gone'); continue }
           var rects = quoteRects(range, q)
           var count = 0
@@ -2927,7 +2898,7 @@ window.__ModuleLoader__.load({
         var placed = []
         for (var i = 0; i < ui.quotes.length; i++) {
           var q = ui.quotes[i]
-          var range = rangeFor(q)
+          var range = locateQuote(q.text, q)
           if (range === null) continue
           var rects = quoteRects(range, q)
           var hls = overlay.querySelectorAll('[data-ann-hl-for="' + q.id + '"]')
@@ -2994,7 +2965,7 @@ window.__ModuleLoader__.load({
         var placed = []
         for (var i = 0; i < ui.quotes.length; i++) {
           var q = ui.quotes[i]
-          var range = rangeFor(q)
+          var range = locateQuote(q.text, q)
           if (range === null) continue
           var rects = quoteRects(range, q)
           for (var c = 0; c < rects.length; c++) {
