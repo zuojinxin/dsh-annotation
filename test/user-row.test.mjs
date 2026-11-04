@@ -64,7 +64,9 @@ function buildUserRow({ kind = 'user', anchor = 'k1', echo = false, steering = f
 
 function makeUserBubbleOf(capable) {
   return extract('userBubbleOf', {
-    hostCanQuote: () => capable,
+    // 放行闸现在是「宿主具备引用能力」：insertQuote 可用，或 0.2.2+ 的官方浮层
+    // 容器存在。测试里直接给结果。
+    userRowsAllowed: () => capable,
     isUserKind: (k) => k === 'user' || k === 'steering',
     bubbleIn: extract('bubbleIn', {}),
     warnUserRowGated: () => {},

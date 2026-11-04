@@ -569,15 +569,33 @@ window.__ModuleLoader__.load({
     // 只警告一次：用户行被能力闸挡掉时把原因写到 console（排查「客户端能批注正文、
     // 不能批注用户消息」这类问题的第一现场）。
     var userRowGateWarned = false
+    // 由 apply() 装上：把「为什么解析不出会话壳」的中间值一次性打出来。
+    var gateDiagnose = function () { return null }
     function warnUserRowGated() {
       if (userRowGateWarned) return
       userRowGateWarned = true
       console.warn('[annotation] 用户消息批注未启用：宿主没解析出当前会话的输入壳（canInsertQuote=false）。'
         + ' 0.2.1-rc 属预期；0.2.2+ 上出现请把这条连同 navigator.userAgent 一起发给维护者。')
+      try {
+        var d = gateDiagnose()
+        if (d !== null) console.warn('[annotation] 能力闸诊断', d)
+      } catch (_) {}
     }
 
     function isUserKind(kind) {
       return kind === 'user' || kind === 'steering'
+    }
+
+    /** 宿主是否具备官方引用能力：0.2.2+ 的 ChatView 才渲染这个浮层容器。
+     *  比 canInsertQuote 弱——不依赖「会话输入壳」解析，所以 Electron 客户端
+     * 窗口（独立 storage 分区、拿不到当前会话）也能用它放行用户行批注。 */
+    function hostQuoteFeature() {
+      try { return document.querySelector('[data-text-interaction-surface]') !== null } catch (_) { return false }
+    }
+
+    /** 用户行是否放行：宿主有引用能力即可；两者都没有（0.2.1-rc）才关。 */
+    function userRowsAllowed() {
+      return hostCanQuote() || hostQuoteFeature()
     }
 
     /** 行 → 正文气泡。不返回整行：行里还有时间戳与操作按钮，
@@ -595,7 +613,7 @@ window.__ModuleLoader__.load({
         // 看得见也想批注。放行，只留文本锚（seqKey 为空）：内存里的 range 让角标
         // 当场画在这条气泡上；落盘后 range 断开 → locateQuote 按文本找回 durable 行。
         if (el.hasAttribute('data-pending-steering')) {
-          if (!hostCanQuote()) { warnUserRowGated(); return null }
+          if (!userRowsAllowed()) { warnUserRowGated(); return null }
           return bubbleIn(el)
         }
         if (el.hasAttribute('data-chat-flow-kind')) {
@@ -603,7 +621,7 @@ window.__ModuleLoader__.load({
           if (el.hasAttribute('data-submission-echo') || el.hasAttribute('data-pending-steering')) return null
           if (el.querySelector('[data-submission-echo], [data-pending-steering]') !== null) return null
           if (!el.hasAttribute('data-chat-anchor-key') && !el.hasAttribute('data-focus-anchor-key')) return null
-          if (!hostCanQuote()) { warnUserRowGated(); return null }
+          if (!userRowsAllowed()) { warnUserRowGated(); return null }
           return bubbleIn(el)
         }
         el = el.parentElement
@@ -615,7 +633,7 @@ window.__ModuleLoader__.load({
      *  待发插话排在最后：durable 行优先命中（评分循环只在严格更高时才换），
      *  只有在 durable 里找不到时才落到还没落盘的那条上。 */
     function userBubbles() {
-      if (!hostCanQuote()) return []
+      if (!userRowsAllowed()) return []
       var rows = document.querySelectorAll('[data-chat-flow-kind="user"], [data-chat-flow-kind="steering"]')
       var out = []
       for (var i = 0; i < rows.length; i++) {
@@ -2380,8 +2398,34 @@ window.__ModuleLoader__.load({
       hostCanQuote = canInsertQuote
       // 启动横幅：排查「两个窗口行为不一致」时先看这一行——它能区分「旧 bundle」
       // 与「新 bundle 但会话没解析出来」。
-      console.log('[annotation] v1.7.2 已加载（' + (isElectronHost() ? 'Electron 宿主' : 'Web 宿主') + '）；'
-        + '用户消息批注=' + (hostCanQuote() ? '开' : '待定（当前无会话，或宿主没有 insertQuote）'))
+      console.log('[annotation] v1.7.3 已加载（' + (isElectronHost() ? 'Electron 宿主' : 'Web 宿主') + '）；'
+        + '用户消息批注=' + (userRowsAllowed() ? '开' : '关（宿主没有引用能力）')
+        + '；会话输入壳=' + (canInsertQuote() ? '有' : '无'))
+
+      // 能力闸诊断：只在用户行被挡时打一次，用来定位「为什么解析不出会话壳」。
+      gateDiagnose = function () {
+        var out = {
+          ua: '', ls: null, sessions: false, currentShape: null, currentKey: null,
+          id: null, scope: null, conversation: false, shell: false, insertQuote: false,
+        }
+        try { out.ua = String(navigator.userAgent || '').slice(0, 90) } catch (_) {}
+        try { out.ls = localStorage.getItem('dsh.sessions.current') } catch (_) {}
+        var s = sessionsSvc()
+        out.sessions = s !== null
+        try {
+          var c = s !== null ? s.current : null
+          out.currentShape = c === null || c === undefined ? null : Object.keys(c)
+          out.currentKey = c !== null && c !== undefined && c.value && c.value.key !== undefined ? c.value.key : null
+        } catch (err) { out.currentErr = String(err) }
+        out.id = currentSessionId()
+        var sc = scopeOfSession(out.id)
+        out.scope = sc === undefined ? 'undefined' : 'ok'
+        out.conversation = conversationSvc() !== null
+        var sh = shellFor(sc)
+        out.shell = sh !== null
+        out.insertQuote = sh !== null && typeof sh.insertQuote === 'function'
+        return out
+      }
 
       /** 工具条「引用文本」：走宿主公开的 SessionInput.insertQuote 插入原子引用节点。 */
       function insertQuoteFromToolbar() {
@@ -2391,12 +2435,16 @@ window.__ModuleLoader__.load({
           return
         }
         var shell = shellFor(scopeOfSession(currentSessionId()))
-        if (shell === null || typeof shell.insertQuote !== 'function') {
-          showToast(t('toast.quoteFail'))
-          return
-        }
         var inserted = false
-        try { inserted = shell.insertQuote(text) === true } catch (_) { inserted = false }
+        if (shell !== null && typeof shell.insertQuote === 'function') {
+          try { inserted = shell.insertQuote(text) === true } catch (_) { inserted = false }
+        }
+        if (!inserted) {
+          // 服务路径不可用（Electron 客户端的会话壳解析不出来）：退回把 markdown
+          // 引用直接插进输入框。发出去的内容与官方引用一致（消息文本就是
+          // blockquote，宿主照样渲染成引用块），丢的只是输入框里那颗原子芯片。
+          inserted = domAttachBlock('> ' + String(text).replace(/\r?\n/g, '\n> ') + '\n\n', false)
+        }
         if (!inserted) {
           showToast(t('toast.quoteFail'))
           return
@@ -2519,7 +2567,7 @@ window.__ModuleLoader__.load({
             already,
             enterEditing,
           ))
-          if (canInsertQuote()) {
+          if (canInsertQuote() || hostQuoteFeature()) {
             bar.appendChild(ghostButton(
               ICONS.quote,
               t('actions.quote'),
