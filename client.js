@@ -1918,6 +1918,8 @@ window.__ModuleLoader__.load({
           anchorRaf = false
           if (ui.quotes.length > 0) renderMarkers()
           updateChip()
+          // 盖在停止键上的原生发送键是 fixed 定位，滚动 / 尺寸变化要跟着挪。
+          syncNativeSendButton()
           if (ui.mode === 'editing' && ui.el !== null) {
             // 标记锚定模式（点角标进入）：卡片跟着标记走，用户滚动后它仍在标记旁边；
             // 原文锚定模式（添加批注 / 编辑按钮进入）：沿用原来的「保持视口内」钳制。
@@ -2225,6 +2227,90 @@ window.__ModuleLoader__.load({
         submitAttached()
       }
 
+      // ---------- 运行中：把「停止」原位换成「发送」 ----------
+      // 宿主的规则是「有内容就变发送、清空就变停止」。批注也是一种内容，所以这里
+      // 照同一条规则办：有批注且草稿为空时，在停止键原位盖一颗同款发送键（外观从
+      // 空闲时的发送键抄来），点它排队发送批注；清空批注 / 运行结束立即还原。
+      // 停止键只是被 visibility 藏起来，React 节点不动，不会把它卸载。
+      var sendTemplate = null     // 空闲时抓到的发送键外观（className + innerHTML）
+      var overlaySend = null      // 盖在停止键上的发送键
+      var hiddenPrimary = null    // 被藏起来的停止键
+
+      function isSendLabel(label) {
+        return label === '发送消息' || label === 'Send message'
+          || label === '排队发送' || label === '插话发送'
+          || label === 'Send queued message' || label === 'Send message now'
+      }
+
+      /** 输入区最右边那颗按钮 = 宿主的主操作键（发送 / 停止 / 排队）。 */
+      function primaryComposerButton() {
+        var card = document.querySelector('[data-composer-card]')
+        if (card === null) return null
+        var btns = card.querySelectorAll('button')
+        var best = null
+        var bestLeft = -Infinity
+        for (var i = 0; i < btns.length; i++) {
+          var b = btns[i]
+          var r = b.getBoundingClientRect()
+          if (r.width === 0 || r.height === 0) continue
+          if (r.left > bestLeft) { bestLeft = r.left; best = b }
+        }
+        return best
+      }
+
+      function teardownNativeSend() {
+        if (hiddenPrimary !== null) {
+          hiddenPrimary.style.visibility = ''
+          hiddenPrimary.removeAttribute('data-ann-stop-hidden')
+          hiddenPrimary = null
+        }
+        if (overlaySend !== null) {
+          if (overlaySend.parentNode !== null) overlaySend.parentNode.removeChild(overlaySend)
+          overlaySend = null
+        }
+      }
+
+      function syncNativeSendButton() {
+        try {
+          var primary = primaryComposerButton()
+          if (primary !== null && isSendLabel(primary.getAttribute('aria-label')) && sendTemplate === null) {
+            sendTemplate = { className: primary.className, html: primary.innerHTML }
+          }
+          var running = primary !== null && !isSendLabel(primary.getAttribute('aria-label'))
+          var need = running && ui.quotes.length > 0 && draftIsEmpty() && sendTemplate !== null
+          if (!need) { teardownNativeSend(); return }
+          if (hiddenPrimary !== primary) {
+            teardownNativeSend()
+            hiddenPrimary = primary
+            primary.style.visibility = 'hidden'
+            primary.setAttribute('data-ann-stop-hidden', '1')
+          }
+          var rect = primary.getBoundingClientRect()
+          if (rect.width === 0 || rect.height === 0) return
+          if (overlaySend === null) {
+            overlaySend = document.createElement('button')
+            overlaySend.type = 'button'
+            overlaySend.setAttribute('data-ann-send-native', '')
+            overlaySend.className = sendTemplate.className
+            overlaySend.innerHTML = sendTemplate.html
+            overlaySend.setAttribute('aria-label', '发送消息')
+            overlaySend.style.cssText = 'position:fixed;z-index:960;margin:0;padding:0;'
+            overlaySend.addEventListener('click', function (ev) {
+              ev.preventDefault()
+              ev.stopPropagation()
+              sendAnnotationsFromChip()
+            })
+            document.body.appendChild(overlaySend)
+          }
+          overlaySend.style.left = rect.left + 'px'
+          overlaySend.style.top = rect.top + 'px'
+          overlaySend.style.width = rect.width + 'px'
+          overlaySend.style.height = rect.height + 'px'
+        } catch (err) {
+          teardownNativeSend()
+        }
+      }
+
       /** 只接管「空草稿的纯批注」这一种情况：
        *  - 有批注待发送，且上一次从按钮发出的批注已经结算完（sendStillInFlight）；
        *  - 按钮仍是宿主的普通发送按钮（运行中的停止 / 排队 / 插话按钮一律不碰）；
@@ -2252,6 +2338,8 @@ window.__ModuleLoader__.load({
           lastSendAvailable = available
           if (ui.quotes.length > 0) updateChip()
         }
+        // 运行中把「停止」原位换成「发送」（有批注且草稿为空时）。
+        syncNativeSendButton()
         if (button === null) {
           sendBtnState.el = null
           return
@@ -3808,9 +3896,9 @@ window.__ModuleLoader__.load({
         chipLayer.appendChild(ic)
         chipLayer.appendChild(document.createTextNode(' ' + ui.quotes.length + ' 条批注'))
         // 运行中宿主的主按钮是「停止」键，没有普通发送键 → 草稿为空时纯批注
-        // 没有任何提交入口（用户实测：只有批注时发不出去，打了字才出现发送键）。
-        // 这里给一个显式发送键，走与 Ctrl+Enter 同一条排队路径。
-        if (!hasPlainSendButton()) {
+        // 没有任何提交入口。原生发送键能盖上去时就用它（见 syncNativeSendButton），
+        // 盖不上（拿不到宿主发送键外观）才退回这颗小箭头。
+        if (!hasPlainSendButton() && sendTemplate === null) {
           var sendBtn = document.createElement('span')
           sendBtn.setAttribute('data-ann-send', '')
           sendBtn.setAttribute('role', 'button')
@@ -4655,6 +4743,7 @@ window.__ModuleLoader__.load({
       // ---------- 清理 ----------
       function teardown() {
         hostCanQuote = function () { return false }
+        teardownNativeSend()
         clearSettle()
         stopFollowLoop()
         document.removeEventListener('selectionchange', onSelection)
