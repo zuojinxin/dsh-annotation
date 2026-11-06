@@ -1431,14 +1431,26 @@ window.__ModuleLoader__.load({
        *  宿主同帧完成，不闪。这里只把输入文字设为透明——布局不动、提交路径不动。
        *  （不改走「自己 submit」：v1.4.26 记录过那样会把批注单独发成一条。） */
       var composerMaskTimer = null
+      var composerMaskBox = null   // { el, h, ov } —— 被临时锁尺寸的元素
+      var composerMaskPrev = null
       function isElectronHost() {
         return typeof navigator !== 'undefined' && /Electron/i.test(navigator.userAgent || '')
       }
+      // 拼稿瞬间隐藏「批注块被渲染 → 又被宿主清掉」的中间态。
+      // 必须在 setDraft **之前**调用：先量出输入区当前尺寸并锁住，再写草稿，
+      // 否则批注块撑高/撑出滚动条会造成可见的跳动（用户实测「输入框突然变宽」）。
+      // 只改 color / 临时限高与 overflow，提交路径完全不动，600ms 后兜底恢复。
       function maskComposerForWeb() {
-        if (isElectronHost()) return
         var el = composerInputEl()
         if (el === null) return
         el.style.color = 'transparent'
+        var box = el.closest('[data-composer-card]') || el
+        if (box !== null && box !== undefined && composerMaskBox === null) {
+          composerMaskBox = box
+          composerMaskPrev = { h: box.style.height, ov: box.style.overflow }
+          box.style.height = box.offsetHeight + 'px'
+          box.style.overflow = 'hidden'
+        }
         if (composerMaskTimer !== null) clearTimeout(composerMaskTimer)
         composerMaskTimer = setTimeout(unmaskComposerForWeb, 600)
       }
@@ -1446,6 +1458,14 @@ window.__ModuleLoader__.load({
         if (composerMaskTimer !== null) { clearTimeout(composerMaskTimer); composerMaskTimer = null }
         var el = composerInputEl()
         if (el !== null) el.style.color = ''
+        if (composerMaskBox !== null) {
+          try {
+            composerMaskBox.style.height = composerMaskPrev.h
+            composerMaskBox.style.overflow = composerMaskPrev.ov
+          } catch (_) {}
+          composerMaskBox = null
+          composerMaskPrev = null
+        }
       }
 
       function domDraftText() {
@@ -2067,6 +2087,11 @@ window.__ModuleLoader__.load({
           if (ui.mode !== 'closed') closeToolbar()
           return
         }
+        // 诊断：只要按下回车就记一行，能区分「回调根本没被调用」与「被下面某个条件挡住」。
+        if (e.key === 'Enter') {
+          dlog('[annotation] keydown Enter quotes=' + ui.quotes.length
+            + ' shift=' + e.shiftKey + ' alt=' + e.altKey + ' imeBlocked=' + isImeKeyBlocked(e))
+        }
         // 【回车随输入框发送】在 composer 里按 Enter（且已收集批注、非输入法合成）：
         // 提交前一刻把批注块拼进草稿，composer 自己的 Enter 提交继续——模型收到
         // 批注清单 + 用户输入的问题。用户始终看不到文本被塞进去。
@@ -2082,6 +2107,13 @@ window.__ModuleLoader__.load({
         if (e.key === 'Enter' && !e.shiftKey && !e.altKey
           && ui.quotes.length > 0 && !isImeKeyBlocked(e)) {
           var input = e.target instanceof Element && e.target.closest('[data-composer-input]')
+          // 诊断：回车到达时看到的关键条件。「技能在中间」那次一条日志都没有，
+          // 说明问题发生在本函数之前或这道判定上。
+          dlog('[annotation] 回车拦截 quotes=' + ui.quotes.length
+            + ' key=' + e.key + ' shift=' + e.shiftKey + ' alt=' + e.altKey
+            + ' target=' + (e.target instanceof Element ? (e.target.tagName + '.' + String(e.target.className).slice(0, 40)) : String(e.target))
+            + ' inInput=' + (input !== null)
+            + ' inCard=' + (input !== null && input.closest('[data-composer-card]') !== null))
           if (input !== null && input.closest('[data-composer-card]') !== null) {
             var attached = attachAndSend(e)
             if (attached && (e.ctrlKey || e.metaKey)) {
@@ -2121,13 +2153,28 @@ window.__ModuleLoader__.load({
         }
       }
 
+      // 宿主的「主提交键」在运行中会换文案（rc.1 起）：
+      //   primaryLabel = primaryStops ? 停止生成
+      //     : sending ? 正在发送消息
+      //     : running && steeringAvailable && !disabled && !uploadsPending && plainMessageDraft
+      //         ? t(primarySubmitMode === "steer" ? "插话发送" : "排队发送")
+      //         : t("发送消息")
+      // 早期版本运行中主键就是「停止」，所以只认「发送消息」够用；rc.1 在「运行中 + 有草稿」
+      // 时会显示可用的「排队发送 / 插话发送」键。只认「发送消息」就会漏掉它，点它时
+      // 插件不接管 → 正文发出、批注留在输入框（2026-11-06 实测复现）。
+      // 判定统一走文件下方那一份 isSendLabel（含中/英及历史文案）。
+
+      var SEND_LABEL_SELECTOR =
+        'button[aria-label="发送消息"],button[aria-label="Send message"],'
+        + 'button[aria-label="排队发送"],button[aria-label="Queue message"],'
+        + 'button[aria-label="插话发送"],button[aria-label="Steer message"]'
+
       function sendButtonOf(target) {
         if (!(target instanceof Element) || typeof target.closest !== 'function') return null
         var button = target.closest('button')
         if (!(button instanceof HTMLButtonElement)
           || button.closest('[data-composer-card]') === null) return null
-        var label = button.getAttribute('aria-label')
-        return label === '发送消息' || label === 'Send message' ? button : null
+        return isSendLabel(button.getAttribute('aria-label')) ? button : null
       }
 
       // 宿主的发送按钮在草稿为空时是 disabled 的
@@ -2183,6 +2230,11 @@ window.__ModuleLoader__.load({
       }
 
       /** 是否是宿主那个「普通发送」按钮（运行中的停止 / 排队 / 插话按钮都不算）。 */
+      // 注意与 isSendLabel 的分工：
+      //   isSendLabel（宽）→ 用来「认出」用户点的是主提交键（含运行中的排队/插话），
+      //     只用于拦截点击、拼块后放行宿主提交，不改按钮状态。
+      //   isPlainSendButton（窄）→ 只认空闲态的「发送消息」，用于「接管并摘/还 disabled」
+      //     这种会改宿主按钮状态的场景；绝不能把运行中的排队/插话键摘成可用。
       function isPlainSendButton(button) {
         var label = button.getAttribute('aria-label')
         return label === '发送消息' || label === 'Send message'
@@ -2220,10 +2272,16 @@ window.__ModuleLoader__.load({
 
       /** 宿主当前有没有「普通发送按钮」。会话运行中主按钮是停止键 → 没有，
        *  这时草稿为空就完全没有提交入口（见 sendAnnotationsFromChip）。 */
+      /** 找到 composer 里当前那颗主提交键（含运行中的排队/插话文案）。 */
+      function findSendButton() {
+        var list = document.querySelectorAll(SEND_LABEL_SELECTOR)
+        for (var i = 0; i < list.length; i++) {
+          if (list[i].closest('[data-composer-card]') !== null) return list[i]
+        }
+        return null
+      }
       function hasPlainSendButton() {
-        return document.querySelector(
-          '[data-composer-card] button[aria-label="发送消息"],'
-          + '[data-composer-card] button[aria-label="Send message"]') !== null
+        return findSendButton() !== null
       }
 
       /** 胶囊上的显式发送键：运行中（主按钮是停止键）时，纯批注没有别的入口。
@@ -2247,7 +2305,8 @@ window.__ModuleLoader__.load({
 
       function isSendLabel(label) {
         return label === '发送消息' || label === 'Send message'
-          || label === '排队发送' || label === '插话发送'
+          || label === '排队发送' || label === 'Queue message'
+          || label === '插话发送' || label === 'Steer message'
           || label === 'Send queued message' || label === 'Send message now'
       }
 
@@ -2338,9 +2397,7 @@ window.__ModuleLoader__.load({
 
       /** 条件满足时让发送按钮可用；条件消失后把 disabled 还回去。 */
       function syncSendButton() {
-        var button = document.querySelector(
-          '[data-composer-card] button[aria-label="发送消息"],'
-          + '[data-composer-card] button[aria-label="Send message"]')
+        var button = findSendButton()
         // 运行开始/结束会翻转「有没有普通发送按钮」，胶囊上的显式发送键要跟着变。
         var available = button !== null
         if (available !== lastSendAvailable) {
@@ -2396,14 +2453,33 @@ window.__ModuleLoader__.load({
        *  B. **没有用户内容**（空草稿、无附件）→ 宿主因为 empty 会拒绝提交，所以由插件
        *     接管按钮：摘 disabled、自己 submit('queue') 发出纯批注。 */
       function onSendButtonActivate(e) {
+        dlog('[annotation] 点击激活 quotes=' + ui.quotes.length + ' button=' + e.button)
         if (ui.quotes.length === 0 || e.button !== 0) return
         var button = sendButtonOf(e.target)
-        if (button === null) return
+        dlog('[annotation] 命中发送按钮=' + (button !== null))
+        if (button === null) {
+          // 诊断：rc.1 起宿主发送键的 DOM 变了，sendButtonOf 认不出。把点击目标和
+          // composer 内所有候选按钮的属性全打出来，用来重写选择器。
+          try {
+            var card = e.target instanceof Element ? e.target.closest('[data-composer-card]') : null
+            var btns = card ? Array.prototype.slice.call(card.querySelectorAll('button, [role="button"]')) : []
+            dlog('[annotation] 诊断 target=' + (e.target instanceof Element ? (e.target.tagName + '.' + String(e.target.className).slice(0, 60)) : String(e.target)) + ' card=' + (card !== null) + ' nButtons=' + btns.length)
+            btns.forEach(function (b, i) {
+              dlog('[annotation] 诊断按钮[' + i + '] <' + b.tagName + '> aria=' + JSON.stringify(b.getAttribute('aria-label'))
+                + ' type=' + b.getAttribute('type') + ' cls=' + String(b.className).slice(0, 50)
+                + ' html=' + b.outerHTML.slice(0, 150))
+            })
+          } catch (_) {}
+          return
+        }
         var owned = button.getAttribute('data-dsh-ann-enabled') === '1'
+        dlog('[annotation] owned=' + owned + ' plain=' + (button !== null && isPlainSendButton(button))
+          + ' draftEmpty=' + draftIsEmpty() + ' attachments=' + hasAttachments() + ' inFlight=' + sendStillInFlight())
         if (!owned) {
           // 路径 A：按钮是宿主自己可用/禁用的那个（有附件时 empty 不成立，按钮本来就
           // 可用）。我们只在 capture 阶段把批注块补进草稿，然后把事件留给宿主。
-          if (!isPlainSendButton(button)) return
+          // 用宽判定：运行中的「排队发送 / 插话发送」也是主提交键，必须一并接管。
+          if (!isSendLabel(button.getAttribute('aria-label'))) return
           if (sendStillInFlight()) return
           if (draftIsEmpty() && !hasAttachments()) return
           if (!prependBlockForHostSubmit()) return
@@ -2449,7 +2525,12 @@ window.__ModuleLoader__.load({
         try {
           var draft = resolveDraftText(shell)
           var snap = inputSnapshotOf(shell)
+          dlog('[annotation] prepend draftLen=' + draft.length
+            + ' snapDraftLen=' + (snap !== null && typeof snap.draft === 'string' ? snap.draft.length : 'n/a')
+            + ' occ=' + (snap !== null && Array.isArray(snap.occurrences) ? snap.occurrences.length : 'n/a')
+            + ' domLen=' + domDraftText().length)
           if (isCommandDraft(draft, shell)) {
+            dlog('[annotation] prepend 跳过：判定为命令')
             showToast(t('toast.skipCommand'))
             return false
           }
@@ -2458,8 +2539,8 @@ window.__ModuleLoader__.load({
           if (rollbackDraft === null) rollbackDraft = draft
           var payload = draftPayloadFor(shell, buildBlock(hasQuestion), hasQuestion)
           if (payload === null) { showToast(t('toast.chipAttachFail')); return false }
-          shell.setDraft(payload)
           maskComposerForWeb()
+          shell.setDraft(payload)
           annotationAttached = true
           markFreshBubble()
           dlog('[annotation] 批注块已拼入草稿，由宿主的同一次提交与正文/附件一起发出（'
@@ -3663,7 +3744,9 @@ window.__ModuleLoader__.load({
       function attachAndSend(e) {
         // 触发器菜单开着：这次回车归菜单（选命令 / 选文件），不是发消息。
         // 拼块会把批注原文留在输入框里（见 triggerMenuOpen 注释）。批注原样保留。
-        if (triggerMenuOpen()) return false
+        var menuOpen = triggerMenuOpen()
+        dlog('[annotation] attachAndSend 进入 menuOpen=' + menuOpen)
+        if (menuOpen) return false
         var current = currentSessionId()
         var scoped = scopeOfSession(current)
         var shell = shellFor(scoped)
@@ -3675,9 +3758,18 @@ window.__ModuleLoader__.load({
             // 时若它还没同步到输入区的文字，会读到空串 → 生成 headOnly 变体把正文丢掉，
             // 正文随后被宿主自己提交成另一条消息（用户报的「分成两轮」）。
             var draft = resolveDraftText(shell)
-            if (!shouldAttachForEnter(e, draft)) return false
             var snap = inputSnapshotOf(shell)
+            // 诊断（dsh.annotation.debug=1 时才输出）：拼稿判定的全部输入。
+            // 「技能 + 正文 + 批注在排队时丢块」这类问题只能靠这几个数定位。
+            dlog('[annotation] 拼稿判定 draftLen=' + draft.length
+              + ' snapDraftLen=' + (snap !== null && typeof snap.draft === 'string' ? snap.draft.length : 'n/a')
+              + ' occ=' + (snap !== null && Array.isArray(snap.occurrences) ? snap.occurrences.length : 'n/a')
+              + ' phase=' + (snap !== null && snap.phase !== undefined ? String(snap.phase) : 'n/a')
+              + ' quotes=' + ui.quotes.length
+              + ' ctrl=' + (e.ctrlKey === true) + ' meta=' + (e.metaKey === true))
+            if (!shouldAttachForEnter(e, draft)) { dlog('[annotation] 跳过：修饰键 + 非空草稿'); return false }
             if (isCommandDraft(draft, shell)) {
+              dlog('[annotation] 跳过：判定为斜杠命令')
               showToast(t('toast.skipCommand'))
               return false
             }
@@ -3690,11 +3782,15 @@ window.__ModuleLoader__.load({
             if (rollbackDraft === null) rollbackDraft = draft
             var payload = draftPayloadFor(shell, block, hasQuestion)
             if (payload === null) {
+              dlog('[annotation] 放弃：结构化载荷不可用（带芯片的草稿）')
               showToast(t('toast.chipAttachFail'))
               return false
             }
-            shell.setDraft(payload)
+            dlog('[annotation] 载荷 ' + (typeof payload === 'string' ? '纯文本' : '结构化')
+              + ' textLen=' + String(typeof payload === 'string' ? payload : payload.text).length
+              + ' refs=' + (typeof payload === 'string' ? 0 : payload.references.length))
             maskComposerForWeb()
+            shell.setDraft(payload)
             annotationAttached = true
             markFreshBubble()
             dlog('[annotation] 批注块已拼入草稿，将与正文/附件同一条消息发出（'
@@ -3710,8 +3806,10 @@ window.__ModuleLoader__.load({
         // 随后宿主自己的 Enter / 发送按钮照常提交，批注随消息一起发出。
         try {
           var domDraft = domDraftText()
-          if (!shouldAttachForEnter(e, domDraft)) return false
+          dlog('[annotation] 走 DOM 回退，domDraftLen=' + domDraft.length + ' shell=' + (shell === null ? 'null' : 'ok'))
+          if (!shouldAttachForEnter(e, domDraft)) { dlog('[annotation] DOM 回退跳过：修饰键 + 非空草稿'); return false }
           if (isCommandDraft(domDraft, null)) {
+            dlog('[annotation] DOM 回退跳过：判定为斜杠命令')
             showToast(t('toast.skipCommand'))
             return false
           }
@@ -3720,7 +3818,7 @@ window.__ModuleLoader__.load({
             return true
           }
           var hasQ = domDraft.trim() !== ''
-          if (!domAttachBlock(buildBlock(hasQ), hasQ)) return false
+          if (!domAttachBlock(buildBlock(hasQ), hasQ)) { dlog('[annotation] DOM 注入失败（execCommand 返回 false）'); return false }
           annotationAttached = true
           domAttached = true
           markFreshBubble()
