@@ -432,14 +432,19 @@ window.__ModuleLoader__.load({
         },
       },
     }
-    // 正常运行不刷屏：console 只留 warn / error。要排查时在 DevTools 里执行
+    // 默认完全不向控制台输出（含诊断与告警）。要排查时在 DevTools 里执行
     //   localStorage.setItem('dsh.annotation.debug', '1')
-    // 再刷新，全部诊断日志会回来（关掉：removeItem 同名键）。
+    // 再刷新，全部诊断与告警日志会回来（关掉：removeItem 同名键）。
     var DEBUG_LOG = false
     try { DEBUG_LOG = localStorage.getItem('dsh.annotation.debug') === '1' } catch (_) {}
     function dlog() {
       if (!DEBUG_LOG) return
       try { console.log.apply(console, arguments) } catch (_) {}
+    }
+    // 告警也走同一开关：默认静默，只有开启 dsh.annotation.debug 时才输出。
+    function wlog() {
+      if (!DEBUG_LOG) return
+      try { console.warn.apply(console, arguments) } catch (_) {}
     }
     var currentLang = 'zh'
     function setLang(id) {
@@ -1557,7 +1562,7 @@ window.__ModuleLoader__.load({
         try {
           return parsePendingQuotes(localStorage.getItem(pendingStorageKey(sessionId)))
         } catch (err) {
-          console.warn('[annotation] 读取待发送批注失败：', err)
+          wlog('[annotation] 读取待发送批注失败：', err)
           return []
         }
       }
@@ -1569,7 +1574,7 @@ window.__ModuleLoader__.load({
           if (ui.quotes.length === 0) localStorage.removeItem(key)
           else localStorage.setItem(key, stringifyPendingQuotes(ui.quotes))
         } catch (err) {
-          console.warn('[annotation] 保存待发送批注失败：', err)
+          wlog('[annotation] 保存待发送批注失败：', err)
         }
       }
 
@@ -2138,7 +2143,7 @@ window.__ModuleLoader__.load({
             shell.submit('queue')
             return
           } catch (err) {
-            console.warn('[annotation] 批注直接提交失败，回退合成 Enter：', err)
+            wlog('[annotation] 批注直接提交失败，回退合成 Enter：', err)
           }
         }
         var el = composerInputEl()
@@ -2149,7 +2154,7 @@ window.__ModuleLoader__.load({
             bubbles: true, cancelable: true,
           }))
         } catch (err) {
-          console.warn('[annotation] 合成 Enter 提交失败：', err)
+          wlog('[annotation] 合成 Enter 提交失败：', err)
         }
       }
 
@@ -2501,7 +2506,7 @@ window.__ModuleLoader__.load({
           // 宿主同步抛错时如实告知，不假装成功。异步失败由宿主自己的错误通知呈现
           // （例如附件未上传完：sendSession / serializeDraftAttachments 抛错后经
           //   notify("error", …) 显示），这里只兜同步抛出的情况。
-          console.warn('[annotation] 批注提交被宿主拒绝：', err)
+          wlog('[annotation] 批注提交被宿主拒绝：', err)
           restoreDraftAfterFailedSubmit()
           showToast(t('toast.sendBlocked') + (err && err.message ? err.message : err))
         }
@@ -2547,7 +2552,7 @@ window.__ModuleLoader__.load({
             + ui.quotes.length + ' 条，含正文=' + hasQuestion + '）')
           return true
         } catch (err) {
-          console.warn('[annotation] 拼稿失败，交给宿主原样提交：', err)
+          wlog('[annotation] 拼稿失败，交给宿主原样提交：', err)
           return false
         }
       }
@@ -2703,7 +2708,7 @@ window.__ModuleLoader__.load({
           if (root !== null && root.classList !== undefined) root.classList.remove(ACTIVE_CLASS)
           if (!surfaceShapeWarned) {
             surfaceShapeWarned = true
-            console.warn('[annotation] 官方 text-interaction 浮层出现 ' + buttons.length + ' 个动作按钮（children=' + surface.children.length + '），已放弃接管，回退为两个控件并存；结构：' + String(surface.innerHTML).slice(0, 240))
+            wlog('[annotation] 官方 text-interaction 浮层出现 ' + buttons.length + ' 个动作按钮（children=' + surface.children.length + '），已放弃接管，回退为两个控件并存；结构：' + String(surface.innerHTML).slice(0, 240))
           }
         } catch (_) {}
       }
@@ -3204,6 +3209,7 @@ window.__ModuleLoader__.load({
       function positionEditorAtChip(card, chip) {
         if (chip === null || !chip.isConnected) return false
         var cr = chip.getBoundingClientRect()
+        if (cr.width <= 0 || cr.height <= 0) return false
         var w = card.offsetWidth || 320
         var h = card.offsetHeight || 50
         var left = Math.max(8, Math.min(cr.left + cr.width / 2 - w / 2, window.innerWidth - w - 8))
@@ -3213,6 +3219,9 @@ window.__ModuleLoader__.load({
         if (top < minTop) top = minTop
         card.style.left = left + 'px'
         card.style.top = top + 'px'
+        // 同步 ui.pos：onLayoutChange 的编辑态兜底会用 ui.pos 再摆一次，
+        // 若这里不更新，跟随循环与布局兜底会各按一套坐标拉扯，表现为卡片高频抖动。
+        ui.pos = { left: left, top: top }
         return true
       }
 
@@ -3733,7 +3742,7 @@ window.__ModuleLoader__.load({
         try {
           return { text: text, references: shiftReferences(occ, pad), quotes: [] }
         } catch (err) {
-          console.warn('[annotation] 带引用芯片的草稿不支持结构化拼块：', err)
+          wlog('[annotation] 带引用芯片的草稿不支持结构化拼块：', err)
           return null
         }
       }
@@ -3797,7 +3806,7 @@ window.__ModuleLoader__.load({
               + ui.quotes.length + ' 条，含正文=' + hasQuestion + '）')
             return true
           } catch (err) {
-            console.warn('[annotation] 服务路径拼稿失败，回退 DOM 注入：', err)
+            wlog('[annotation] 服务路径拼稿失败，回退 DOM 注入：', err)
           }
         }
 
@@ -3825,7 +3834,7 @@ window.__ModuleLoader__.load({
           dlog('[annotation] 批注块已注入输入区（DOM 回退），回车将随消息发送（' + ui.quotes.length + ' 条）')
           return true
         } catch (err) {
-          console.warn('[annotation] 批注拼稿失败：', err)
+          wlog('[annotation] 批注拼稿失败：', err)
           showToast(t('toast.attachFail') + (err && err.message ? err.message : err))
           return false
         }
@@ -4402,7 +4411,7 @@ window.__ModuleLoader__.load({
           pruneEmpty(bubble)
           return true
         } catch (err) {
-          console.warn('[annotation] 气泡隐藏手术失败：', err)
+          wlog('[annotation] 气泡隐藏手术失败：', err)
           return false
         }
       }
@@ -4577,7 +4586,7 @@ window.__ModuleLoader__.load({
       function markRowDiag(row, msg) {
         if (row.hasAttribute('data-annotation-diag')) return
         row.setAttribute('data-annotation-diag', '')
-        console.warn('[annotation] ' + msg, row)
+        wlog('[annotation] ' + msg, row)
       }
 
       /** 扫描所有已结束流式输出的助手行：把「Annotation N：」替换为可悬浮芯片。 */
@@ -4793,7 +4802,7 @@ window.__ModuleLoader__.load({
           // 助手回复：把「Annotation N：」变为可悬浮的批注芯片（内容取自最近一条带批注的用户消息）。
           decorateAssistantAnnotations()
         } catch (err) {
-          console.warn('[annotation] 装饰扫描失败：', err)
+          wlog('[annotation] 装饰扫描失败：', err)
         }
       }
 
