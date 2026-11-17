@@ -47,6 +47,57 @@ test('窗口常量存在且有界（别把它调成「永远开着」，那会�
   assert.ok(windowMs > 0 && windowMs <= 5000, `window must stay short, got ${windowMs}ms`)
 })
 
+// ---------- v2.0.15：pruneEmpty 不能删「只剩空格」的分隔元素 ----------
+// 用户实测对照：禁用插件后，宿主自己渲染「/命令 + 引用 + 正文」时三者**有空格分隔**；
+// 插件处理过的同款消息三者糊在一起。
+// 根因：宿主的 user-text 渲染器把引用前后的 \n\n 换成 `display:' '` 的纯空格元素
+// （dsh-message-quotes/src/client/quoteRule），而 pruneEmpty 用 trim() 判空，
+// 把这些分隔元素当成「被掏空」删掉了。
+function makePrune() {
+  // 极简 DOM 桩：元素只有 textContent / children / getBoundingClientRect / remove()。
+  const mk = (text, opts = {}) => ({
+    textContent: text,
+    children: opts.children || [],
+    parentNode: {},
+    removed: false,
+    getBoundingClientRect: () => ({ width: opts.w === undefined ? 0 : opts.w, height: opts.h === undefined ? 0 : opts.h }),
+    remove() { this.removed = true; this.parentNode = null },
+  })
+  const els = [
+    mk(' '),                                  // 宿主分隔符
+    mk(''),                                   // 真空 → 删
+    mk('  \t '),                              // 空白分隔
+    mk('正文'),
+    mk('\n'),
+    mk('', { children: [{ tag: 'svg' }], w: 16, h: 16 }),   // 引号标记：无文本但有子元素 + 有尺寸
+    mk('', { w: 8, h: 8 }),                   // 无文本无子元素但有尺寸 → 保留
+  ]
+  const container = { querySelectorAll: () => els }
+  const pruneEmpty = Function(`${raw('pruneEmpty')}; return pruneEmpty`)()
+  pruneEmpty(container)
+  return els.map((e) => ({ text: JSON.stringify(e.textContent), removed: e.removed }))
+}
+
+test('pruneEmpty 只删真正空的元素，保留纯空格分隔元素', () => {
+  const res = makePrune()
+  assert.deepEqual(res.slice(0, 5), [
+    { text: '" "', removed: false },        // 宿主的分隔符，必须留
+    { text: '""', removed: true },          // 真空元素，删
+    { text: '"  \\t "', removed: false },   // 空白分隔，必须留
+    { text: '"正文"', removed: false },
+    { text: '"\\n"', removed: false },      // 换行也是分隔，必须留
+  ])
+})
+
+// 用户实测：禁用插件后引用前面有 `"` 引号记号，启用插件后记号不见了。
+// 根因：引号标记是 `<span aria-hidden><svg/></span>`，textContent 为空，
+// 只按文本判空会把它整个删掉。判空必须同时看「有没有元素子节点」与「有没有尺寸」。
+test('pruneEmpty 不能删掉引用的引号标记（无文本但含 svg 子元素）', () => {
+  const res = makePrune()
+  assert.equal(res[5].removed, false, '引号标记（含 svg 子元素）必须保留')
+  assert.equal(res[6].removed, false, '无文本但有渲染尺寸的元素必须保留')
+})
+
 test('markFreshBubble / awaitingFreshBubble / settleFreshBubble 共用一个有界窗口', () => {
   let now = 1000
   const trio = Function('Date', `

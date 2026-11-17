@@ -2015,6 +2015,7 @@ window.__ModuleLoader__.load({
           if (el === null || !el.closest) return true
           if (el.closest('[data-composer-card]') || el.closest('[data-input-scroll]')
             || el.closest('[data-annotation-for-dsh]') || el.closest('[data-annotation-overlay]')
+            || el.closest('[data-annotation-markers]')
             || el.closest('[data-annotation-chip]') || el.closest('[data-annotation-tip-layer]')) {
             continue
           }
@@ -2917,20 +2918,52 @@ window.__ModuleLoader__.load({
       var markersSig = null
       var markerHover = null
       var tipEditing = false
+      // 同一轮 renderMarkers 内的 locateQuote 缓存（v2.0.9）。
+      // 为什么需要：renderMarkers 每帧先跑 markersSignature()（对每条批注 locateQuote 一次），
+      // 签名没变时再跑 updateMarkerPositions()（又对每条批注 locateQuote 一次），
+      // 签名变了则跑 buildMarkers()（第三次）。locateQuote 是全文档扫描
+      // （querySelectorAll 全部消息行 + 逐行 textContent + 上下文评分），
+      // 于是每条批注每帧被白扫 2~3 遍，成本 O(批注数 × 会话长度)。
+      // 这里按「轮」缓存：renderMarkers 进入时换一个新 Map，三个子函数共用；
+      // 轮与轮之间不保留（DOM 可能已被宿主改过，跨轮复用会拿到过期 Range）。
+      var locateCache = null
+      function locateQuoteCached(q) {
+        if (locateCache === null) return locateQuote(q.text, q)
+        var hit = locateCache.get(q.id)
+        if (hit !== undefined) return hit
+        var r = locateQuote(q.text, q)
+        locateCache.set(q.id, r)
+        return r
+      }
       function markersSignature() {
+        // 签名的口径必须与 buildMarkers 的**实际产出**一致（v2.0.11）。
+        // 旧签名只数 rects.length，但 buildMarkers 只有在「某个 rect 落在会话视图内」
+        // （anchor !== null）时才建角标；原文滚出屏幕时一个角标都不建，签名却仍报
+        // ':N:chip'。于是「签名说没变 / DOM 其实缺角标」长期不一致：
+        //   · A 滚出屏幕后角标消失，签名不变 → 不会重建，角标就一直缺着；
+        //   · 此时再批注 B、签名一变 → 整层重建，A 的缺失被"补上"又因离屏再被跳过，
+        //     来回滚动时签名在变与不变之间抖动 → 角标节点被反复销毁重建
+        //     （实测 20 轮滚动重建 17 次）。
+        // 现在把「是否真的有可见 anchor」算进签名，签名变化只在真正需要重建时发生。
         var parts = []
+        var clipTop = ui.clipTop != null ? ui.clipTop : 0
+        var clipBottom = ui.clipBottom != null ? ui.clipBottom : window.innerHeight
         for (var i = 0; i < ui.quotes.length; i++) {
           var q = ui.quotes[i]
-          var range = locateQuote(q.text, q)
+          var range = locateQuoteCached(q)
           if (range === null) { parts.push(q.id + ':gone'); continue }
           var rects = quoteRects(range, q)
           var count = 0
+          var hasAnchor = false
           for (var c = 0; c < rects.length; c++) {
             var r = rects[c]
             if (r.width === 0 || r.height === 0) continue
             count++
+            if (r.bottom > clipTop && r.top < clipBottom) hasAnchor = true
           }
-          parts.push(q.id + ':' + count + ':chip')
+          // hasAnchor 决定角标建不建（见 buildMarkers 的 anchor 判定），
+          // 必须进签名，否则签名与 DOM 会长期不一致。
+          parts.push(q.id + ':' + count + ':' + (hasAnchor ? 'chip' : 'off'))
         }
         return parts.join('|')
       }
@@ -2963,17 +2996,25 @@ window.__ModuleLoader__.load({
           ? 'inset(' + clip.top + 'px 0px ' + Math.max(0, window.innerHeight - clip.bottom) + 'px 0px)'
           : 'none'
         if (tipLayer != null) tipLayer.style.clipPath = 'none'
-        var sig = markersSignature()
-        if (sig !== markersSig) {
-          markersSig = sig
-          overlay.textContent = ''
-          markerLayer.textContent = ''
-          buildMarkers()
-          // 标记层重建会把新增批注的临时角标一起清掉，这里补回来（编辑期间一直保持）。
-          if (ui.mode === 'editing' && (ui.anchorRect !== null || ui.lastSelectionRect !== null)) showPendingMarker()
-        } else {
-          // 位置变化不再整层重建（重建会造成滚动时的闪烁/抖动），只就地更新坐标。
-          updateMarkerPositions()
+        // 开一轮新的缓存作用域：本轮内 markersSignature / buildMarkers /
+        // updateMarkerPositions 共用同一份 locateQuote 结果。finally 里清掉，
+        // 保证异常时不会把过期 Range 泄漏到下一轮。
+        locateCache = new Map()
+        try {
+          var sig = markersSignature()
+          if (sig !== markersSig) {
+            markersSig = sig
+            overlay.textContent = ''
+            markerLayer.textContent = ''
+            buildMarkers()
+            // 标记层重建会把新增批注的临时角标一起清掉，这里补回来（编辑期间一直保持）。
+            if (ui.mode === 'editing' && (ui.anchorRect !== null || ui.lastSelectionRect !== null)) showPendingMarker()
+          } else {
+            // 位置变化不再整层重建（重建会造成滚动时的闪烁/抖动），只就地更新坐标。
+            updateMarkerPositions()
+          }
+        } finally {
+          locateCache = null
         }
       }
 
@@ -2984,7 +3025,7 @@ window.__ModuleLoader__.load({
         var placed = []
         for (var i = 0; i < ui.quotes.length; i++) {
           var q = ui.quotes[i]
-          var range = locateQuote(q.text, q)
+          var range = locateQuoteCached(q)
           if (range === null) continue
           var rects = quoteRects(range, q)
           var hls = overlay.querySelectorAll('[data-ann-hl-for="' + q.id + '"]')
@@ -3000,7 +3041,7 @@ window.__ModuleLoader__.load({
             hl.style.height = rect.height + 'px'
           }
           var chip = markerLayer.querySelector('[data-ann-chip-for="' + q.id + '"]')
-          if (chip === null) { markersSig = null; renderMarkers(); return }
+          // 先算 anchor：只有「有可见 anchor」时角标才应该存在（与 markersSignature 同口径）。
           var anchor = null
           if (q.focusAtEnd) {
             for (var k = rects.length - 1; k >= 0; k--) {
@@ -3015,7 +3056,14 @@ window.__ModuleLoader__.load({
               if (r2.bottom > clipTop && r2.top < clipBottom) { anchor = r2; break }
             }
           }
-          if (anchor === null) { chip.style.display = 'none'; continue }
+          if (anchor === null) {
+            // 原文离屏：按设计就不该有角标。以前这里无条件走「缺角标 → 置空签名 →
+            // 重建」，而重建后依然离屏、依然不建角标 → 每次滚动都白重建一轮
+            // （甚至递归）。离屏不再视为「缺件」，有残留节点就收起来即可。
+            if (chip !== null) chip.style.display = 'none'
+            continue
+          }
+          if (chip === null) { markersSig = null; renderMarkers(); return }
           chip.style.display = ''
           // 角标固定贴在锚点行上方 20px：正文向上滚出会话视图时，角标跟着一起滑出去、
           // 由标记层的裁剪遮住（旧版把它夹在窗口顶部，于是浮到页签栏上）。
@@ -3051,7 +3099,7 @@ window.__ModuleLoader__.load({
         var placed = []
         for (var i = 0; i < ui.quotes.length; i++) {
           var q = ui.quotes[i]
-          var range = locateQuote(q.text, q)
+          var range = locateQuoteCached(q)
           if (range === null) continue
           var rects = quoteRects(range, q)
           for (var c = 0; c < rects.length; c++) {
@@ -3116,6 +3164,24 @@ window.__ModuleLoader__.load({
             if (outside || (ui.composerTop != null && chipTop + 22 > ui.composerTop)) chip.style.display = 'none'
             ;(function (q, quoteRect, chipEl) {
               chipEl.addEventListener('mouseenter', function () {
+                // 幂等守卫（v2.0.10）：同一批注的悬浮卡已经在显示时直接返回，绝不再重建。
+                // 判据**只看批注 id + 卡片在文档里**，不能比对角标节点身份——
+                // 角标层重建后（宿主重渲染 / renderMarkers 整层重建）新角标是新节点，
+                // 用 chipEl === chipEl 比永远不相等，守卫形同虚设，repeat mouseenter 会
+                // 每轮重建一次 .dsh-ann-tip，而它带 .12s dsh-ann-pop 入场动画 → 每次重播
+                // = 用户看到的「快速闪烁」。rc.3 的重渲染比 rc.1 频繁，所以桌面端更明显。
+                if (markerHover !== null && markerHover.id === q.id) {
+                  var shownTip = tipLayer.firstElementChild
+                  if (shownTip !== null && shownTip.isConnected) {
+                    if (markerHover.grace !== null) {
+                      clearTimeout(markerHover.grace)
+                      markerHover.grace = null
+                    }
+                    // 角标换了节点也把引用更新过来，后续 mouseleave / 定位拿到的是当前节点。
+                    markerHover.chipEl = chipEl
+                    return
+                  }
+                }
                 if (tipEditing && tipLayer.firstElementChild !== null
                   && markerHover !== null && markerHover.id === q.id) return
                 if (markerHover !== null && markerHover.grace !== null) {
@@ -3123,7 +3189,7 @@ window.__ModuleLoader__.load({
                 }
                 setQuoteHighlight(q.id, true)
                 showMarkerTip(q, chipEl, quoteRect)
-                markerHover = { id: q.id, grace: null }
+                markerHover = { id: q.id, grace: null, chipEl: chipEl }
               })
               chipEl.addEventListener('mouseleave', function () {
                 var id = q.id
@@ -3146,7 +3212,7 @@ window.__ModuleLoader__.load({
                 setQuoteHighlight(q.id, true)
                 if (markerHover === null || markerHover.id !== q.id || tipLayer.firstElementChild === null) {
                   showMarkerTip(q, chipEl, quoteRect)
-                  markerHover = { id: q.id, grace: null }
+                  markerHover = { id: q.id, grace: null, chipEl: chipEl }
                 }
                 var tipEl = tipLayer.firstElementChild
                 if (tipEl !== null) renderMarkerTipEditor(tipEl, q, chipEl, quoteRect)
@@ -3242,6 +3308,11 @@ window.__ModuleLoader__.load({
         if (top < minTop) top = minTop
         card.style.left = left + 'px'
         card.style.top = top + 'px'
+        // 同步 ui.pos，与 positionEditorAtChip 同一条规则：onLayoutChange 的编辑态兜底
+        // 会用 ui.pos 再摆一次卡片，跟随循环每帧也用它。这里只写 style 不回写，两套坐标
+        // 就会每帧互相覆盖（角标贴近输入框、被 display:none → 本函数接管的那条路径），
+        // 表现为编辑卡片高频跳动。v2.0.6 只修了 AtChip 一侧，本条是同一个根因的漏网分支。
+        ui.pos = { left: left, top: top }
       }
 
       /** 角标悬浮卡：单行时按钮贴正文右侧；多行时按钮落到右下角，正文占满整行宽度。 */
@@ -3249,6 +3320,10 @@ window.__ModuleLoader__.load({
         tipLayer.textContent = ''
         var el = document.createElement('div')
         el.className = 'dsh-ann-tip'
+        // 归属标记（v2.0.8）：updateChip() 在「待发批注已清空」时会把 tipLayer 清掉，
+        // 只放过它认识的归属。角标悬浮卡此前没有标记 → 被当成自家残留一起抹掉，
+        // 紧接着的 mouseenter 又重建一次，同样表现为闪烁。这里补上与消息徽章同级的归属。
+        el.__annotationTipOwner = 'marker'
         el.style.cssText = 'position:fixed;z-index:1160;width:260px;max-width:calc(100vw - 16px);padding:10px 12px 8px;border-radius:12px;border:1px solid var(--dsh-ann-border,rgba(0,0,0,.12));background:var(--dsw-alias-bg-layer-1,#fff);box-shadow:var(--dsw-shadow-lv2);font-family:var(--dsw-font-family,system-ui);font-size:12px;color:var(--dsw-alias-label-primary);'
         var note = document.createElement('div')
         note.style.cssText = 'line-height:1.5;word-break:break-word;white-space:pre-wrap;max-height:120px;overflow:auto;'
@@ -3355,7 +3430,7 @@ window.__ModuleLoader__.load({
         if (typeof cancelHide === 'function') cancelHide()
         setQuoteHighlight(q.id, true)
         showMarkerTip(q, chipEl, null)
-        markerHover = { id: q.id, grace: null }
+        markerHover = { id: q.id, grace: null, chipEl: chipEl }
         var tipEl = tipLayer.firstElementChild
         if (tipEl === null) return false
         renderMarkerTipEditor(tipEl, q, chipEl, null)
@@ -3728,6 +3803,134 @@ window.__ModuleLoader__.load({
         return out
       }
 
+      /** composer 里每个引用节点（宿主 QuoteNode）之后、同一段落内的可见文本。
+       *
+       *  为什么需要（v2.0.13）：宿主的引用是**原子 QuoteNode**，它的剪贴板投影
+       *  是「> …」多行；`insertQuote` 在节点后紧跟一个分隔空格，用户正文接着打在
+       *  那个空格后面，于是**投影里正文与引用的最后一行连成同一行**：
+       *
+       *      > …我来帮你判断怎么下手。 测试，无需回复
+       *
+       *  宿主自己提交时由 `normalizeQuoteBoundaries` 补 `\n\n`（它知道节点边界），
+       *  但插件用 `setDraft(纯文本)` 拼块会把所有 QuoteNode 拍平，这层保护随之丢失，
+       *  消息正文就被 markdown 块引用规则（dsh-message-quotes 的 messageQuoteRanges，
+       *  逐行匹配行首 `>` 并把后续以 `>` 开头的行并入同一条）整段并进引用 ——
+       *  用户报的「批注+引用+正文时正文显示到引用里面」即是此。 */
+      function quoteTails() {
+        var el = null
+        try { el = composerInputEl() } catch (_) { el = null }
+        if (el === null || el === undefined) return []
+        var nodes = el.querySelectorAll('[data-composer-quote]')
+        if (nodes === null || nodes === undefined || nodes.length === 0) return []
+        var out = []
+        for (var i = 0; i < nodes.length; i++) {
+          var tail = ''
+          var n = nodes[i].nextSibling
+          while (n !== null) {
+            tail += n.nodeType === 3 ? (n.nodeValue || '') : (n.textContent || '')
+            n = n.nextSibling
+          }
+          out.push(tail)
+        }
+        return out
+      }
+
+      /** composer 里每个引用节点**之前**、同一段落内的可见文本。
+       *
+       *  为什么需要（v2.0.14）：宿主按**行首 `>`** 判定引用（dsh-message-quotes 的
+       *  messageQuoteRanges）。引用节点前面若还挂着同一段落里的文本（斜杠命令芯片、
+       *  技能/文件引用芯片、或用户先打的字），拍平后那一行就变成
+       *
+       *      /pet-boarding-records > 引用文字
+       *
+       *  行首不是 `>`，整条引用判定失效 —— 用户报的「斜杠命令在最前面就出问题、
+       *  放在正文中间就正常」正是此：命令在后时行首仍是 `>`。 */
+      function quoteHeads() {
+        var el = null
+        try { el = composerInputEl() } catch (_) { el = null }
+        if (el === null || el === undefined) return []
+        var nodes = el.querySelectorAll('[data-composer-quote]')
+        if (nodes === null || nodes === undefined || nodes.length === 0) return []
+        var out = []
+        for (var i = 0; i < nodes.length; i++) {
+          var head = ''
+          var n = nodes[i].previousSibling
+          while (n !== null) {
+            head = (n.nodeType === 3 ? (n.nodeValue || '') : (n.textContent || '')) + head
+            n = n.previousSibling
+          }
+          out.push(head)
+        }
+        return out
+      }
+
+      /** 把被 QuoteNode 拍平后与相邻文本粘连的部分重新断开成独立段落。
+       *
+       *  两个方向都要处理，因为宿主只认行首 `>`：
+       *   - **引用之后**：`> 引用末行 正文` → 正文被并进引用；
+       *   - **引用之前**：`/命令 > 引用` → 行首不是 `>`，引用整条失效。
+       *
+       *  只依据 DOM 里引用节点前后**真实文本**定位，不做猜测：找不到（结构变了、
+       *  本来就已经分行、或服务态草稿与 DOM 不一致）就原样返回 null，绝不误切。
+       *
+       *  与宿主 serializeDraftPrompt 的 normalizeQuoteBoundaries 对齐：正文前导空白
+       *  去掉（宿主也是 trimStart），行尾空白去掉（宿主也 trimEnd）。
+       *
+       *  @returns `{ text, marks:[{at, delta}] }`，marks 是插入点在**新**文本里的位置
+       *  与长度增量，调用方据此平移引用芯片的偏移；无需修改时返回 null。 */
+      function breakMergedQuoteTail(draftText) {
+        if (draftText === '') return null
+        var tails = quoteTails()
+        var heads = quoteHeads()
+        if (tails.length === 0 && heads.length === 0) return null
+        // cuts：需要在第 idx 个字符之前插入 \n\n。
+        var cuts = []
+        var limit = draftText.length
+        for (var i = tails.length - 1; i >= 0; i--) {
+          var body = tails[i].replace(/^\s+/, '')
+          if (body === '') continue
+          var idx = draftText.lastIndexOf(body, limit)
+          if (idx <= 0) continue
+          // 往回跳过缩进：碰到换行就说明正文已经自成一段（引用按行首 `>` 判定，
+          // 不以 `>` 开头的新行本来就不属于引用），此时绝不能动。
+          var j = idx - 1
+          while (j >= 0 && (draftText.charAt(j) === ' ' || draftText.charAt(j) === '\t')) j--
+          if (j >= 0 && draftText.charAt(j) === '\n') continue
+          cuts.push(idx)
+          limit = idx
+        }
+        // 引用之前的文本：它与引用之间必须换行，否则 `>` 不在行首、引用失效。
+        var from = 0
+        for (var h = 0; h < heads.length; h++) {
+          var head = heads[h].replace(/\s+$/, '')
+          if (head === '') continue
+          var hi = draftText.indexOf(head, from)
+          if (hi === -1) continue
+          var endAt = hi + head.length
+          from = endAt
+          if (endAt >= draftText.length) continue
+          // 已经是独立段落（引用已经在行首）→ 不用动。
+          if (draftText.charAt(endAt) === '\n') continue
+          // 跳过引用前的分隔空白，让切点正对 `>`：插入 \n\n 后引用直接从行首开始。
+          var k = endAt
+          while (k < draftText.length && (draftText.charAt(k) === ' ' || draftText.charAt(k) === '\t')) k++
+          cuts.push(k)
+        }
+        if (cuts.length === 0) return null
+        cuts.sort(function (a, b) { return a - b })
+        var out = ''
+        var marks = []
+        var last = 0
+        for (var c = 0; c < cuts.length; c++) {
+          if (cuts[c] === last) continue
+          out += draftText.slice(last, cuts[c]).replace(/\s+$/, '')
+          marks.push({ at: out.length, delta: 2 })
+          out += '\n\n'
+          last = cuts[c]
+        }
+        out += draftText.slice(last).replace(/^\s+/, '')
+        return marks.length === 0 ? null : { text: out, marks: marks }
+      }
       /** 拼稿载荷：有引用芯片时给结构化草稿（保住技能 / 文件 / 会话引用），
        *  否则给纯文本。返回 null = 有芯片但宿主不接受结构化草稿 → **放弃拼块**，
        *  绝不退回纯文本（那会把芯片压成文本，技能激活信息静默丢失）。 */
@@ -3735,12 +3938,36 @@ window.__ModuleLoader__.load({
         var snap = inputSnapshotOf(shell)
         var snapText = snap !== null && typeof snap.draft === 'string' ? snap.draft : ''
         var draftText = snapText.trim() !== '' ? snapText : resolveDraftText(shell)
+        // 引用被 setDraft 拍平后，正文会粘在引用末行（见 breakMergedQuoteTail）。
+        // 必须在拼块之前把正文重新断成独立段落，否则整段正文会被 markdown 并进引用。
+        var fixed = null
+        try {
+          fixed = breakMergedQuoteTail(draftText)
+        } catch (err) {
+          // 探测 composer DOM 只为修分隔，任何异常都必须退回「原样拼块」——
+          // 绝不能因为读不到一个节点就让批注拼稿整体失败。
+          if (typeof wlog === 'function') wlog('[annotation] 引用分隔探测失败，按原样拼块：', err)
+          fixed = null
+        }
+        if (fixed !== null) {
+          if (typeof dlog === 'function') dlog('[annotation] 引用末行与正文粘连，插入段落分隔 ×' + fixed.marks.length)
+          draftText = fixed.text
+        }
         var text = block + (hasQuestion ? '\n' + draftText : '')
         var occ = snap !== null && Array.isArray(snap.occurrences) ? snap.occurrences : []
         if (occ.length === 0) return text
-        var pad = block.length + (hasQuestion ? 1 : 0)
+        var refs = shiftReferences(occ, block.length + (hasQuestion ? 1 : 0))
+        if (fixed !== null) {
+          // 插入的每处 \n\n 都会把其后所有偏移推后 2 个字符。
+          for (var m = 0; m < fixed.marks.length; m++) {
+            var at = fixed.marks[m].at + block.length + (hasQuestion ? 1 : 0)
+            for (var r = 0; r < refs.length; r++) {
+              if (refs[r].offset >= at) refs[r].offset += fixed.marks[m].delta
+            }
+          }
+        }
         try {
-          return { text: text, references: shiftReferences(occ, pad), quotes: [] }
+          return { text: text, references: refs, quotes: [] }
         } catch (err) {
           wlog('[annotation] 带引用芯片的草稿不支持结构化拼块：', err)
           return null
@@ -4018,7 +4245,8 @@ window.__ModuleLoader__.load({
           // 「悬停毫无反应」。
           var tipNode = tipLayer.firstElementChild
           var foreign = tipNode !== null
-            && (tipNode.__annotationTipOwner === 'bubble' || tipNode.__annotationTipOwner === 'chip')
+            && (tipNode.__annotationTipOwner === 'bubble' || tipNode.__annotationTipOwner === 'chip'
+              || tipNode.__annotationTipOwner === 'marker')
           if (!foreign) tipLayer.textContent = ''
           return
         }
@@ -4328,12 +4556,32 @@ window.__ModuleLoader__.load({
         }
       }
 
-      /** 清掉容器里被手术掏空的元素（div/span/p）。 */
+      /** 清掉容器里被手术掏空的元素（div/span/p）。
+       *
+       *  「掏空」的判定必须同时满足三条，缺一条就会误删宿主的正常渲染：
+       *
+       *   1. 文本是**零字符**（`textContent === ''`）。不能用 `trim()`：宿主的
+       *      user-text 渲染器用 `<span> </span>` 这种纯空格元素当分隔符
+       *      （dsh-message-quotes 的 quoteRule 把引用前后的 `\n\n` 换成
+       *      `display:' '`），按 trim 判空会把它们删掉 → 芯片/引用/正文糊成一团。
+       *   2. 没有**元素子节点**。引用的引号标记是 `<span aria-hidden><svg/></span>`，
+       *      `textContent` 同样是 ''，但它渲染出 16x16 的图标；按文本判空会把这个
+       *      标记删掉 → 消息里的引用失去开头那个 `"` 记号。
+       *   3. 它自己有可见尺寸（零宽零高才算没内容），作为「真的什么都没画」的兜底。
+       *
+       *  v1.x 只有第 1 条且用了 trim()，那时气泡里只有「块 + 正文」两种内容。 */
       function pruneEmpty(container) {
         var empties = container.querySelectorAll('div,span,p')
         for (var e = 0; e < empties.length; e++) {
           var em = empties[e]
-          if (em.parentNode !== null && (em.textContent || '').trim() === '') em.remove()
+          if (em.parentNode === null) continue
+          if ((em.textContent || '') !== '') continue
+          if (em.children !== undefined && em.children.length > 0) continue
+          if (em.getBoundingClientRect !== undefined) {
+            var r = em.getBoundingClientRect()
+            if (r.width > 0 || r.height > 0) continue
+          }
+          em.remove()
         }
       }
 

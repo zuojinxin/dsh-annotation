@@ -71,6 +71,78 @@ test('角标点击在原地切成输入框：不新开卡片、不重新定位�
   assert.match(body, /chip\.setAttribute\('data-ann-chip-for', q\.id\)/)
 })
 
+/** 抽出编辑卡片的两个定位函数，在受控的 window / DOM 桩里求值。
+ *  positionEditorAtChip 依赖 chip.getBoundingClientRect() 与 card.offsetWidth/Height，
+ *  这里用最小桩代替真实布局，只验证「写进 DOM 的坐标」与「回写 ui.pos 的坐标」是否一致。
+ *
+ *  注意不能复用上面的 fn()：它按 4 空格缩进匹配模块级函数，而这两个函数在 apply()
+ *  内部、缩进 6 空格。这里按「起始下标 → 下一个 6 空格缩进的右花括号」切。 */
+function inApply(name) {
+  const start = source.indexOf(`function ${name}(`)
+  assert.ok(start > 0, `${name} should be defined`)
+  const end = source.indexOf('\n      }', start)
+  assert.ok(end > start, `${name} 结尾可定位`)
+  return source.slice(start, end + '\n      }'.length)
+}
+
+function positionFns(ui, rects) {
+  const card = {
+    style: { left: '', top: '' },
+    offsetWidth: rects.cardWidth,
+    offsetHeight: rects.cardHeight,
+  }
+  const chip = {
+    isConnected: true,
+    getBoundingClientRect: () => rects.chip,
+  }
+  const window = { innerWidth: rects.innerWidth, innerHeight: rects.innerHeight }
+  const fns = Function('ui', 'card', 'chip', 'window', `
+    ${inApply('positionEditorAtChip')}
+    ${inApply('positionEditorAboveChip')}
+    return { positionEditorAtChip, positionEditorAboveChip }
+  `)(ui, card, chip, window)
+  return { card, chip, fns }
+}
+
+test('positionEditorAtChip 把落位结果回写 ui.pos（跟随循环与布局兜底同一套坐标）', () => {
+  const ui = { pos: { left: 0, top: 0 }, composerTop: 2000, clipTop: 0, pendingChip: null,
+    pendingRect: null, anchorRect: null, lastSelectionRect: null }
+  const { card, chip, fns } = positionFns(ui, {
+    cardWidth: 320, cardHeight: 50,
+    chip: { left: 400, top: 900, width: 26, height: 18 },
+    innerWidth: 1000, innerHeight: 1200,
+  })
+  assert.equal(fns.positionEditorAtChip(card, chip), true)
+  assert.equal(card.style.left, ui.pos.left + 'px', 'DOM 坐标与 ui.pos 必须一致')
+  assert.equal(card.style.top, ui.pos.top + 'px', 'DOM 坐标与 ui.pos 必须一致')
+})
+
+test('positionEditorAboveChip 走原文兜底时同样回写 ui.pos（v2.0.6 漏掉的分支）', () => {
+  // 角标存在但 0 尺寸 = 被输入框遮住 / display:none：AtChip 早退 false，本函数接管落位。
+  const ui = { pos: { left: 100, top: 100 }, composerTop: 2000, clipTop: 0,
+    pendingChip: { isConnected: true, getBoundingClientRect: () => ({ left: 0, top: 0, width: 0, height: 0 }) },
+    pendingRect: { left: 400, top: 940, width: 120, height: 20 },
+    anchorRect: null, lastSelectionRect: null }
+  const { card, fns } = positionFns(ui, {
+    cardWidth: 320, cardHeight: 50,
+    chip: { left: 0, top: 0, width: 0, height: 0 },
+    innerWidth: 1000, innerHeight: 1200,
+  })
+  fns.positionEditorAboveChip(card)
+  assert.equal(card.style.left, ui.pos.left + 'px',
+    '只写 style 不回写 ui.pos，布局兜底会按旧坐标把卡片拽回去 = 高频跳动')
+  assert.equal(card.style.top, ui.pos.top + 'px',
+    '只写 style 不回写 ui.pos，布局兜底会按旧坐标把卡片拽回去 = 高频跳动')
+  assert.notEqual(ui.pos.left, 100, '确实走了兜底落位，而不是沿用初始坐标')
+})
+
+test('两个定位函数对 ui.pos 的处理必须一致（同类缺陷不能只修一半）', () => {
+  const at = inApply('positionEditorAtChip')
+  const above = inApply('positionEditorAboveChip')
+  assert.match(at, /ui\.pos = \{ left: left, top: top \}/, 'AtChip 必须回写')
+  assert.match(above, /ui\.pos = \{ left: left, top: top \}/, 'AboveChip 必须回写，否则两套坐标互相覆盖')
+})
+
 test('openEditorFor 以原文矩形为落位基准，缺省才回退原文定位', () => {
   const start = source.indexOf('function openEditorFor(')
   const end = source.indexOf('function followEditorAnchor()', start)
@@ -153,7 +225,8 @@ test('openEditorAtChip 复用悬停那套：showMarkerTip + renderMarkerTipEdito
   assert.match(body, /chipForQuote\(q\.id\)/, '锚点是当前那颗角标')
   assert.match(body, /showMarkerTip\(q, chipEl, null\)/)
   assert.match(body, /renderMarkerTipEditor\(tipEl, q, chipEl, null\)/, '原地切成输入框，不另开卡片')
-  assert.match(body, /markerHover = \{ id: q\.id, grace: null \}/)
+  assert.match(body, /markerHover = \{ id: q\.id, grace: null, chipEl: chipEl \}/,
+    'markerHover 必须记下 chipEl：mouseenter 的幂等守卫靠它判断「还是不是同一颗角标」')
 })
 
 test('chipForQuote 必须在 markerLayer 里查角标：overlay 只装高亮，查它永远拿到 null', () => {
@@ -266,4 +339,84 @@ test('保存按钮文案缩短为「保存」/「Save」，删除提示两语齐
 
 test('垃圾桶 hover 用错误色（与取消在视觉上区分开）', () => {
   assert.match(source, /\.dsh-ann-icon-danger:hover \{[\s\S]{0,200}state-error-primary/)
+})
+
+// ---------- 角标悬停闪烁（issue #1，v2.0.8）----------
+// 现象：鼠标停在数字角标上，悬浮卡快速闪烁。根因是 repeat mouseenter 每次都
+// tipLayer.textContent='' + 新建 .dsh-ann-tip，而该元素带 .12s 入场动画 → 每重建一次就重播一次。
+
+test('角标 mouseenter 必须幂等：同一批注的悬浮卡已在显示时不得重建', () => {
+  const start = source.indexOf("chipEl.addEventListener('mouseenter'")
+  const end = source.indexOf("chipEl.addEventListener('mouseleave'", start)
+  assert.ok(start > 0 && end > start, 'mouseenter 处理器可定位')
+  const handler = source.slice(start, end)
+  // 判据必须是「批注 id + 卡片在文档里」，**不能**比对角标节点身份：
+  // 角标层重建后新角标是新节点，chipEl === chipEl 永远为假，守卫会形同虚设。
+  assert.match(handler, /markerHover\.id === q\.id/, '幂等判据必须包含批注 id')
+  assert.doesNotMatch(handler, /markerHover\.chipEl === chipEl/,
+    '不得用角标节点身份做幂等判据：重建后节点必换，守卫会失效（rc.3 上闪回就是这个原因）')
+  assert.match(handler, /shownTip\.isConnected/, '还要求卡片仍在文档里')
+  // 角标换节点后要把引用更新到当前节点
+  assert.match(handler, /markerHover\.chipEl = chipEl/, '命中时应把 chipEl 引用更新为当前节点')
+  assert.ok(handler.indexOf('return') < handler.indexOf('showMarkerTip(q, chipEl, quoteRect)'),
+    '幂等 return 必须早于 showMarkerTip，否则仍会重建并重播动画')
+})
+
+test('角标悬浮卡必须带归属标记，否则会被 updateChip 当成残留清掉', () => {
+  const tipBody = source.slice(source.indexOf('function showMarkerTip('),
+    source.indexOf('function renderMarkerTipEditor('))
+  assert.match(tipBody, /el\.__annotationTipOwner = 'marker'/, 'showMarkerTip 必须给卡片打归属标记')
+  const chipBody = source.slice(source.indexOf('function updateChip('),
+    source.indexOf('function scheduleHide('))
+  assert.match(chipBody, /__annotationTipOwner === 'marker'/,
+    'updateChip 的 foreign 判定必须放行 marker 归属，否则悬停卡会被清掉再重建')
+})
+
+test('观察器必须忽略插件自己的角标层，否则自我改动会再次触发观察', () => {
+  const start = source.indexOf('function mutationRelevant(')
+  const end = source.indexOf('function markFreshBubble(', start)
+  assert.ok(start > 0 && end > start, 'mutationRelevant 可定位')
+  const body = source.slice(start, end)
+  for (const sel of ['data-annotation-for-dsh', 'data-annotation-overlay',
+    'data-annotation-markers', 'data-annotation-chip', 'data-annotation-tip-layer']) {
+    assert.ok(body.includes(`[${sel}]`), `插件自有容器 ${sel} 必须列入排除列表`)
+  }
+})
+
+// ---------- 每轮 locateQuote 只扫一次（v2.0.9）----------
+// renderMarkers 每帧会依次调用 markersSignature() 与 updateMarkerPositions() / buildMarkers()，
+// 三者都要「批注 → Range」。locateQuote 是全文档扫描，不缓存就是每条批注每帧白扫 2~3 遍。
+
+test('同一轮内三个子函数必须走缓存的 locateQuote，不得重复全文档扫描', () => {
+  for (const name of ['markersSignature', 'updateMarkerPositions', 'buildMarkers']) {
+    const start = source.indexOf(`function ${name}(`)
+    assert.ok(start > 0, `${name} 可定位`)
+    const end = source.indexOf('\n      }', start)
+    const body = source.slice(start, end)
+    assert.match(body, /locateQuoteCached\(q\)/,
+      `${name} 必须用 locateQuoteCached，否则同轮重复扫描`)
+    assert.doesNotMatch(body, /locateQuote\(q\.text, q\)/,
+      `${name} 不得直接调 locateQuote（会绕过缓存）`)
+  }
+})
+
+test('renderMarkers 负责建立并释放每轮缓存（异常也不能泄漏）', () => {
+  const start = source.indexOf('function renderMarkers(')
+  const end = source.indexOf('function updateMarkerPositions(', start)
+  const body = source.slice(start, end)
+  assert.match(body, /locateCache = new Map\(\)/, '进入时必须开新缓存')
+  assert.match(body, /finally\s*\{[\s\S]{0,80}locateCache = null/,
+    '必须用 finally 清空，异常时不会把过期 Range 带到下一轮')
+  assert.ok(body.indexOf('locateCache = new Map()') < body.indexOf('markersSignature()'),
+    '缓存必须在调用 markersSignature 之前就绪')
+})
+
+test('locateQuoteCached 在无缓存作用域时退化为直调（不影响独立入口）', () => {
+  const start = source.indexOf('function locateQuoteCached(')
+  assert.ok(start > 0, 'locateQuoteCached 必须存在')
+  const end = source.indexOf('\n      }', start)
+  const body = source.slice(start, end)
+  assert.match(body, /if \(locateCache === null\) return locateQuote\(q\.text, q\)/,
+    '无缓存时必须回退到直调，保证 openEditorFromList / openEditorFor 等单次入口行为不变')
+  assert.match(body, /locateCache\.set\(q\.id, r\)/, '按批注 id 缓存')
 })
